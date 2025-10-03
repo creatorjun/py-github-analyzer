@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py-github-analyzer"
+version = "1.0.0"
+description = "GitHub repository analyzer with AI-optimized code extraction"
+authors = [
+    {name = "Han Jun-hee", email = "createbrain2heart@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+keywords = ["github", "analyzer", "code", "repository", "ai", "async"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License", 
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Software Development :: Version Control :: Git",
+    "Topic :: Text Processing :: General",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.25.0",
+    "rich>=10.0.0",
+    "httpx>=0.24.0",
+    "aiofiles>=0.8.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=6.0.0",
+    "pytest-asyncio>=0.18.0",
+    "black>=22.0.0",
+    "flake8>=4.0.0",
+    "mypy>=0.910",
+]
+
+[project.urls]
+Homepage = "https://github.com/creatorjun/py-github-analyzer"
+Repository = "https://github.com/creatorjun/py-github-analyzer"
+Documentation = "https://github.com/creatorjun/py-github-analyzer#readme"
+"Bug Reports" = "https://github.com/creatorjun/py-github-analyzer/issues"
+
+[project.scripts]
+py-github-analyzer = "py_github_analyzer.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["py_github_analyzer*"]
+exclude = ["tests*", "venv*"]
+
+[tool.setuptools.package-data]
+py_github_analyzer = ["*.json", "*.txt"]
