@@ -7,6 +7,33 @@ import os
 import sys
 from pathlib import Path
 
+if os.name == 'nt':  # Windows
+    os.environ['PYTHONIOENCODING'] = 'utf-8'
+    os.environ['PYTHONLEGACYWINDOWSFSENCODING'] = '0'
+    os.environ['PYTHONUTF8'] = '1'
+    
+    try:
+        import locale
+        locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+    except:
+        try:
+            locale.setlocale(locale.LC_ALL, '')
+        except:
+            pass
+    
+    try:
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    except:
+        pass
+    
+    try:
+        import subprocess
+        subprocess.run(['chcp', '65001'], shell=True, capture_output=True)
+    except:
+        pass
+
 # Python version compatibility with improved error handling
 try:
     if sys.version_info >= (3, 8):

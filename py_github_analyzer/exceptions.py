@@ -219,3 +219,19 @@ def suggest_token_creation() -> str:
         "   CLI: py-github-analyzer [URL] -t YOUR_TOKEN\n"
         "   Python: pga.analyze_repository(url, github_token='YOUR_TOKEN')"
     )
+
+class EmptyRepositoryError(GitHubAnalyzerError):
+    """Raised when repository exists but contains no analyzable files"""
+    
+    def __init__(self, message: str, repo_url: str, file_count: int = 0):
+        super().__init__(message)
+        self.repo_url = repo_url
+        self.file_count = file_count
+
+class RepositoryContentError(GitHubAnalyzerError):
+    """Raised when repository content cannot be analyzed"""
+    
+    def __init__(self, message: str, repo_url: str, reason: str):
+        super().__init__(message)
+        self.repo_url = repo_url
+        self.reason = reason

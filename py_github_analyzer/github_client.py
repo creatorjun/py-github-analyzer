@@ -1,5 +1,5 @@
 """
-GitHub Client for py-github-analyzer v1.0.0
+GitHub Client for py-github-analyzer v1.0.2
 Enhanced synchronous GitHub API and ZIP downloading client
 """
 
@@ -11,13 +11,11 @@ from urllib.parse import quote
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# Try to import requests with fallback
 try:
     import requests
     from requests.adapters import HTTPAdapter
     REQUESTS_AVAILABLE = True
     
-    # Try to import Retry class from different locations
     Retry = None
     try:
         from urllib3.util.retry import Retry
@@ -82,10 +80,8 @@ class RateLimitManager:
         return max(0, self.reset_time - int(time.time()))
 
     def suggest_method(self, estimated_files: int) -> str:
-        """Suggest best method based on rate limit"""
-        if not self.check_rate_limit(estimated_files):
-            return "zip"  # Not enough API calls, use ZIP
-        return "api" if self.token else "zip"  # Prefer API if we have token and calls
+        """Suggest best method - ZIP-first strategy for all repositories"""
+        return "zip"
 
 
 class GitHubSession:
@@ -99,10 +95,8 @@ class GitHubSession:
         self.token = token
         self.timeout = timeout
 
-        # Setup retry strategy if Retry class is available
         if Retry is not None:
             try:
-                # Try newer parameter name first
                 retry_strategy = Retry(
                     total=3,
                     status_forcelist=[429, 500, 502, 503, 504],
@@ -111,7 +105,6 @@ class GitHubSession:
                 )
             except TypeError:
                 try:
-                    # Try newer parameter name first
                     retry_strategy = Retry(
                         total=3,
                         status_forcelist=[429, 500, 502, 503, 504],
@@ -120,7 +113,6 @@ class GitHubSession:
                     )
                 except TypeError:
                     try:
-                        # Fallback to older parameter name
                         retry_strategy = Retry(
                             total=3,
                             status_forcelist=[429, 500, 502, 503, 504],
@@ -134,7 +126,6 @@ class GitHubSession:
                 self.session.mount("http://", adapter)
                 self.session.mount("https://", adapter)
 
-        # Setup headers
         headers = {
             'Accept': 'application/vnd.github.v3+json',
             'User-Agent': f'{Config.PACKAGE_NAME}/{Config.VERSION}'
@@ -214,7 +205,7 @@ class GitHubClient:
                 'full_name': repo_data['full_name'],
                 'description': repo_data.get('description', ''),
                 'language': repo_data.get('language', 'Unknown'),
-                'size': repo_data.get('size', 0),  # Size in KB
+                'size': repo_data.get('size', 0),
                 'default_branch': repo_data.get('default_branch', 'main'),
                 'private': repo_data.get('private', False),
                 'archived': repo_data.get('archived', False),
@@ -230,7 +221,6 @@ class GitHubClient:
         except Exception as e:
             if safe_mode:
                 self.logger.debug(f"Failed to get repository info: {e}")
-                # Return minimal info for fallback
                 return {
                     'name': repo,
                     'full_name': f'{owner}/{repo}',
@@ -243,7 +233,6 @@ class GitHubClient:
             else:
                 error_message = str(e)
                 if any(keyword in error_message.lower() for keyword in ['not found', '404']):
-                    # Check if it's actually private vs non-existent
                     if self.token:
                         raise RepositoryNotFoundError(f"Repository {owner}/{repo} not found or you don't have access")
                     else:
@@ -253,46 +242,20 @@ class GitHubClient:
                 else:
                     raise NetworkError(f"Failed to get repository info: {e}")
 
-    def _test_zip_availability(self, owner: str, repo: str, branch: str) -> bool:
-        """Test if ZIP download is available for repository)"""
-        zip_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{branch}"
-        
-        try:
-            # Use HEAD request to test availability without downloading
-            response = self.session.session.head(
-                zip_url,
-                timeout=10,
-                allow_redirects=True,
-                headers={
-                    'Accept': 'application/zip, application/octet-stream, */*',
-                    'User-Agent': f'{Config.PACKAGE_NAME}/{Config.VERSION}'
-                }
-            )
-            
-            # ZIP is available if we get 200 and proper content type
-            content_type = response.headers.get('content-type', '')
-            return (response.status_code == 200 and 
-                    ('zip' in content_type.lower() or 
-                     'octet-stream' in content_type.lower() or
-                     'application' in content_type.lower()))
-                     
-        except Exception as e:
-            self.logger.debug(f"ZIP availability test failed: {e}")
-            return False
-
     def detect_default_branch(self, owner: str, repo: str) -> str:
         """Detect the default branch of repository"""
         
-        # Try repository info first
         try:
             repo_info = self.get_repository_info(owner, repo, safe_mode=True)
             if repo_info.get('default_branch'):
+                self.logger.debug(f"Default branch from repo info: {repo_info['default_branch']}")
                 return repo_info['default_branch']
         except:
             pass
         
-        # Fallback: try common branch names
-        for branch in Config.DEFAULT_BRANCH_PRIORITY:
+        branch_priority = ['main', 'master', 'develop', 'dev', 'trunk']
+        
+        for branch in branch_priority:
             try:
                 url = URLParser.build_api_url(owner, repo, f"branches/{branch}")
                 response = self.session.get(url)
@@ -300,117 +263,157 @@ class GitHubClient:
                 self.rate_limit_manager.consume_calls(1)
                 
                 if response.ok:
-                    self.logger.debug(f"Detected default branch: {branch}")
+                    self.logger.debug(f"Detected default branch via API: {branch}")
                     return branch
             except:
                 continue
         
+        for branch in ['main', 'master', 'develop']:
+            for zip_url in self._get_zip_urls(owner, repo, branch):
+                try:
+                    response = self.session.session.head(zip_url, timeout=5)
+                    if response.status_code == 200:
+                        self.logger.debug(f"Detected branch via ZIP test: {branch}")
+                        return branch
+                except:
+                    continue
+        
         self.logger.warning("Could not detect default branch, using 'main'")
         return "main"
 
+    def _get_zip_urls(self, owner: str, repo: str, branch: str) -> List[str]:
+        """Get all possible ZIP URLs for a repository branch"""
+        return [
+            f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{branch}",
+            f"https://codeload.github.com/{owner}/{repo}/zip/{branch}",
+            f"https://github.com/{owner}/{repo}/archive/refs/heads/{branch}.zip",
+            f"https://github.com/{owner}/{repo}/archive/{branch}.zip"
+        ]
+
     def download_repository_zip(self, owner: str, repo: str, branch: str = None) -> List[Dict[str, Any]]:
-        """Download repository as ZIP and extract file information - FIXED for better reliability"""
+        """Download repository as ZIP and extract file information"""
         
         if not branch:
             branch = self.detect_default_branch(owner, repo)
         
-        # Try multiple branch possibilities
         possible_branches = [branch]
         if branch == 'main':
-            possible_branches.append('master')
+            possible_branches.extend(['master', 'develop', 'dev'])
         elif branch == 'master':
-            possible_branches.append('main')
+            possible_branches.extend(['main', 'develop', 'dev'])
+        else:
+            possible_branches.extend(['main', 'master', 'develop'])
+        
+        seen = set()
+        unique_branches = []
+        for b in possible_branches:
+            if b not in seen:
+                seen.add(b)
+                unique_branches.append(b)
+        
+        possible_branches = unique_branches
+        
+        self.logger.debug(f"Trying branches in order: {possible_branches}")
         
         last_error = None
         
         for attempt_branch in possible_branches:
-            zip_url = f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/{attempt_branch}"
+            possible_zip_urls = self._get_zip_urls(owner, repo, attempt_branch)
             
-            try:
-                self.logger.debug(f"Attempting ZIP download from {zip_url}")
-                
-                headers = {
-                    'Accept': 'application/zip, application/octet-stream, */*',
-                    'User-Agent': f'{Config.PACKAGE_NAME}/{Config.VERSION}',
-                    'Accept-Encoding': 'gzip, deflate',
-                    'Connection': 'keep-alive'
-                }
-                
-                response = self.session.session.get(
-                    zip_url,
-                    timeout=Config.TIMEOUT_CONFIG['zip_timeout'],
-                    stream=True,
-                    allow_redirects=True,
-                    headers=headers
-                )
-                
-                if response.status_code == 404:
-                    self.logger.debug(f"Branch {attempt_branch} not found (404)")
-                    continue
-                elif response.status_code == 403:
-                    raise PrivateRepositoryError(f"Repository {owner}/{repo} appears to be private")
-                elif not response.ok:
-                    raise NetworkError(f"ZIP download failed with status {response.status_code}")
-                
-                # Verify content is actually a ZIP file
-                content_type = response.headers.get('content-type', '')
-                if not any(ct in content_type.lower() for ct in ['zip', 'octet-stream', 'application']):
-                    self.logger.warning(f"Unexpected content-type: {content_type}")
-                
-                # Check content length
-                content_length = response.headers.get('content-length')
-                if content_length:
-                    size_mb = int(content_length) / 1024 / 1024
-                    if size_mb > Config.MAX_TOTAL_SIZE_MB * 2:  # Allow 2x limit for ZIP
-                        raise RepositoryTooLargeError(
-                            f"Repository ZIP too large: {size_mb:.1f}MB",
-                            size_mb,
-                            Config.MAX_TOTAL_SIZE_MB * 2
-                        )
-                
-                # Download content in chunks
-                content = b''
-                downloaded = 0
-                chunk_size = 8192
-                
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if chunk:  # filter out keep-alive chunks
-                        content += chunk
-                        downloaded += len(chunk)
+            self.logger.debug(f"Trying branch '{attempt_branch}' with {len(possible_zip_urls)} URL formats")
+            
+            for zip_url in possible_zip_urls:
+                try:
+                    self.logger.debug(f"Attempting ZIP download from {zip_url}")
+                    
+                    headers = {
+                        'Accept': 'application/zip, application/octet-stream, */*',
+                        'User-Agent': f'{Config.PACKAGE_NAME}/{Config.VERSION}',
+                        'Accept-Encoding': 'gzip, deflate',
+                        'Connection': 'keep-alive'
+                    }
+                    
+                    response = self.session.session.get(
+                        zip_url,
+                        timeout=Config.TIMEOUT_CONFIG.get('zip_timeout', 60),
+                        stream=True,
+                        allow_redirects=True,
+                        headers=headers
+                    )
+                    
+                    if response.status_code == 404:
+                        self.logger.debug(f"ZIP URL not found: {zip_url}")
+                        continue
+                    elif response.status_code == 403:
+                        raise PrivateRepositoryError(f"Repository {owner}/{repo} appears to be private")
+                    elif response.status_code == 302:
+                        self.logger.debug(f"ZIP URL redirect (normal): {zip_url}")
+                    elif not response.ok:
+                        self.logger.debug(f"ZIP URL failed with status {response.status_code}: {zip_url}")
+                        continue
+                    
+                    if response.status_code in [200, 302]:
+                        if response.status_code == 200:
+                            content_type = response.headers.get('content-type', '')
+                            if not any(ct in content_type.lower() for ct in ['zip', 'octet-stream', 'application']):
+                                self.logger.debug(f"Wrong content-type {content_type}: {zip_url}")
+                                continue
+                            
+                            content_length = response.headers.get('content-length')
+                            if content_length:
+                                size_mb = int(content_length) / 1024 / 1024
+                                if size_mb > Config.MAX_TOTAL_SIZE_MB * 2:
+                                    raise RepositoryTooLargeError(
+                                        f"Repository ZIP too large: {size_mb:.1f}MB",
+                                        size_mb,
+                                        Config.MAX_TOTAL_SIZE_MB * 2
+                                    )
                         
-                        # Progress update for large downloads
-                        if content_length and (downloaded % (chunk_size * 100) == 0):
-                            progress = (downloaded / int(content_length)) * 100
-                            self.logger.debug(f"Download progress: {progress:.1f}%")
-                
-                # Verify we got valid ZIP content
-                if len(content) < 100:  # ZIP files should be at least 100 bytes
-                    raise NetworkError(f"ZIP file too small: {len(content)} bytes")
-                
-                if not content.startswith(b'PK'):
-                    raise NetworkError("Downloaded content is not a valid ZIP file (missing ZIP signature)")
-                
-                self.logger.debug(f"ZIP download successful: {len(content)} bytes")
-                return self._extract_zip_contents(content, f"{repo}-{attempt_branch}")
-                
-            except requests.exceptions.RequestException as e:
-                last_error = e
-                self.logger.debug(f"ZIP download failed for branch {attempt_branch}: {e}")
-                continue
-            except (NetworkError, RepositoryTooLargeError) as e:
-                last_error = e
-                self.logger.debug(f"ZIP processing failed for branch {attempt_branch}: {e}")
-                continue
-            except Exception as e:
-                last_error = e
-                self.logger.debug(f"Unexpected error for branch {attempt_branch}: {e}")
-                continue
+                        content = b''
+                        downloaded = 0
+                        chunk_size = 8192
+                        
+                        for chunk in response.iter_content(chunk_size=chunk_size):
+                            if chunk:
+                                content += chunk
+                                downloaded += len(chunk)
+                                
+                                content_length = response.headers.get('content-length')
+                                if content_length and (downloaded % (chunk_size * 100) == 0):
+                                    progress = (downloaded / int(content_length)) * 100
+                                    self.logger.debug(f"Download progress: {progress:.1f}%")
+                        
+                        if len(content) < 100:
+                            self.logger.debug(f"ZIP file too small ({len(content)} bytes): {zip_url}")
+                            continue
+                        
+                        if not content.startswith(b'PK'):
+                            self.logger.debug(f"Invalid ZIP signature: {zip_url}")
+                            continue
+                        
+                        self.logger.info(f"ZIP download successful: {len(content)} bytes from {zip_url} (branch: {attempt_branch})")
+                        return self._extract_zip_contents(content, f"{repo}-{attempt_branch}")
+                    
+                except requests.exceptions.RequestException as e:
+                    last_error = e
+                    self.logger.debug(f"ZIP download failed for {zip_url}: {e}")
+                    continue
+                except (NetworkError, RepositoryTooLargeError) as e:
+                    last_error = e
+                    self.logger.debug(f"ZIP processing failed for {zip_url}: {e}")
+                    if isinstance(e, RepositoryTooLargeError):
+                        raise
+                    continue
+                except Exception as e:
+                    last_error = e
+                    self.logger.debug(f"Unexpected error for {zip_url}: {e}")
+                    continue
         
-        # If all branches failed, raise appropriate error
+        self.logger.error(f"Failed to download ZIP for any branch {possible_branches}")
         if isinstance(last_error, (PrivateRepositoryError, AuthenticationError)):
             raise last_error
         else:
-            raise NetworkError(f"Failed to download ZIP for any branch {possible_branches}. Last error: {last_error}")
+            raise NetworkError(f"Failed to download ZIP for any branch {possible_branches} using any URL format. Last error: {last_error}")
 
     def _extract_zip_contents(self, zip_content: bytes, expected_prefix: str) -> List[Dict[str, Any]]:
         """Extract file information from ZIP content"""
@@ -424,24 +427,24 @@ class GitHubClient:
                     
                     file_path = zip_info.filename
                     
-                    # Remove the repository prefix from path
                     if file_path.startswith(f"{expected_prefix}/"):
                         file_path = file_path[len(f"{expected_prefix}/"):]
                     elif "/" in file_path:
-                        # Handle different branch name format
-                        file_path = "/".join(file_path.split("/")[1:])
+                        parts = file_path.split("/")
+                        if len(parts) > 1:
+                            file_path = "/".join(parts[1:])
+                        else:
+                            file_path = parts[0]
                     
-                    if not file_path:  # Skip root files with no path
+                    if not file_path:
                         continue
                     
-                    # Skip excluded directories and binary files
                     if any(Config.is_excluded_directory(part) for part in file_path.split("/")):
                         continue
                     
                     if Config.is_binary_file(file_path):
                         continue
                     
-                    # Skip large files
                     if zip_info.file_size > Config.MAX_FILE_SIZE_BYTES:
                         self.logger.debug(f"Skipping large file: {file_path} ({zip_info.file_size} bytes)")
                         continue
@@ -450,7 +453,6 @@ class GitHubClient:
                         with zip_file.open(zip_info) as file:
                             content = file.read()
                         
-                        # Try to decode as text
                         try:
                             text_content = content.decode('utf-8')
                         except UnicodeDecodeError:
@@ -471,7 +473,7 @@ class GitHubClient:
                         self.logger.debug(f"Error reading file {file_path}: {e}")
                         continue
             
-            self.logger.debug(f"Extracted {len(files)} files from ZIP")
+            self.logger.info(f"Extracted {len(files)} files from ZIP")
             return files
             
         except zipfile.BadZipFile as e:
@@ -496,7 +498,7 @@ class GitHubClient:
             files = []
             
             for item in tree_data.get('tree', []):
-                if item['type'] == 'blob':  # Only files, not directories
+                if item['type'] == 'blob':
                     files.append({
                         'path': item['path'],
                         'size': item.get('size', 0),
@@ -524,7 +526,7 @@ class GitHubClient:
         def download_single_file(file_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
             """Download a single file"""
             if not self.rate_limit_manager.check_rate_limit(1):
-                return None  # Skip if rate limited
+                return None
             
             try:
                 response = self.session.get(file_info['download_url'], 
@@ -534,12 +536,10 @@ class GitHubClient:
                 
                 content = response.content
                 
-                # Check file size
                 if len(content) > Config.MAX_FILE_SIZE_BYTES:
                     self.logger.debug(f"Skipping large file: {file_info['path']} ({len(content)} bytes)")
                     return None
                 
-                # Decode content
                 try:
                     text_content = content.decode('utf-8')
                 except UnicodeDecodeError:
@@ -560,7 +560,6 @@ class GitHubClient:
                 self.logger.debug(f"Failed to download {file_info['path']}: {e}")
                 return None
         
-        # Execute downloads concurrently
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_file = {executor.submit(download_single_file, file_info): file_info 
                             for file_info in files}
@@ -588,26 +587,20 @@ class GitHubClient:
         for file_info in files:
             path = file_info['path']
             
-            # Skip binary files
             if Config.is_binary_file(path):
                 continue
             
-            # Skip excluded directories
             if any(Config.is_excluded_directory(part) for part in path.split("/")):
                 continue
             
-            # Skip large files
             if file_info.get('size', 0) > Config.MAX_FILE_SIZE_BYTES:
                 continue
             
-            # Add priority scores
             file_info['priority'] = Config.get_file_priority(file_info['path'])
             filtered_files.append(file_info)
         
-        # Sort by priority (highest first)
         filtered_files.sort(key=lambda x: x['priority'], reverse=True)
         
-        # Limit total size
         total_size = 0
         selected_files = []
         
@@ -625,20 +618,16 @@ class GitHubClient:
     def analyze_repository(self, owner: str, repo: str, method: str = "auto") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Main method to analyze repository using specified method"""
         
-        # Get repository information
         repo_info = self.get_repository_info(owner, repo)
         
-        # Check if repository is accessible
         if repo_info.get('private') and not self.token:
             raise AuthenticationError("Private repository requires GitHub token")
         
         if repo_info.get('disabled') or repo_info.get('archived'):
             self.logger.warning(f"Repository is {'disabled' if repo_info.get('disabled') else 'archived'}")
         
-        # Determine method
         if method == "auto":
-            # Estimate file count and suggest method
-            estimated_files = min(repo_info.get('size', 0) // 10, 1000)  # Rough estimate
+            estimated_files = min(repo_info.get('size', 0) // 10, 1000)
             method = self.rate_limit_manager.suggest_method(estimated_files)
             self.logger.debug(f"Auto-selected method: {method}")
         
@@ -646,16 +635,12 @@ class GitHubClient:
             if method == "zip":
                 files = self.download_repository_zip(owner, repo, repo_info['default_branch'])
             elif method == "api":
-                # Get file tree first
                 tree_files = self.get_repository_tree_api(owner, repo, repo_info['default_branch'])
-                # Filter and prioritize files
                 filtered_files = self.filter_and_prioritize_files(tree_files)
-                # Download file contents
                 files = self.download_files_concurrently(filtered_files)
             else:
                 raise ValueError(f"Unknown method: {method}")
             
-            # Ensure files is always a list
             if not isinstance(files, list):
                 self.logger.warning(f"Expected list from method {method}, got {type(files)}")
                 files = []
@@ -663,7 +648,6 @@ class GitHubClient:
             return files, repo_info
             
         except (NetworkError, RateLimitExceededError) as e:
-            # Try fallback method
             if method == "api":
                 self.logger.warning(f"API method failed: {e}. Trying ZIP method...")
                 try:
