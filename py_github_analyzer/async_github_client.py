@@ -21,7 +21,7 @@ except ImportError:
 from .config import Config
 from .exceptions import (
     NetworkError,
-    RateLimitExceededError,
+    RateLimitExceededError, 
     AuthenticationError,
     RepositoryNotFoundError,
     RepositoryTooLargeError,
@@ -34,7 +34,6 @@ from .exceptions import (
 from .utils import URLParser, ValidationUtils
 from .logger import AnalyzerLogger
 
-
 class AsyncRateLimitManager:
     """Async-safe GitHub API rate limit management"""
     
@@ -44,34 +43,33 @@ class AsyncRateLimitManager:
         self.remaining = self.limit
         self.reset_time = int(time.time()) + 3600
         self._lock = asyncio.Lock()
-
+    
     async def update_from_headers(self, headers: Dict[str, str]):
         """Update rate limit info from response headers"""
         async with self._lock:
             self.limit = int(headers.get('x-ratelimit-limit', self.limit))
             self.remaining = int(headers.get('x-ratelimit-remaining', self.remaining))
             self.reset_time = int(headers.get('x-ratelimit-reset', self.reset_time))
-
+    
     async def check_rate_limit(self, required_calls: int = 1) -> bool:
         """Check if we have enough API calls remaining"""
         async with self._lock:
             return self.remaining >= (required_calls + Config.RATE_LIMIT_BUFFER)
-
+    
     async def consume_calls(self, count: int = 1):
         """Consume API calls from remaining count"""
         async with self._lock:
             self.remaining = max(0, self.remaining - count)
-
+    
     def wait_time_until_reset(self) -> int:
         """Calculate wait time until rate limit resets"""
         return max(0, self.reset_time - int(time.time()))
-
+    
     async def wait_for_rate_limit_reset(self):
         """Wait for rate limit to reset if necessary"""
         wait_time = self.wait_time_until_reset()
         if wait_time > 0 and self.remaining <= Config.RATE_LIMIT_BUFFER:
             await asyncio.sleep(min(wait_time, 300))  # Max 5 minutes wait
-
 
 class AsyncGitHubSession:
     """Async HTTP session for GitHub API using httpx"""
@@ -91,7 +89,7 @@ class AsyncGitHubSession:
         
         if self.token:
             headers['Authorization'] = f'token {self.token}'
-
+        
         # Create httpx client with enhanced connection pooling
         limits = httpx.Limits(
             max_keepalive_connections=50,
@@ -106,7 +104,7 @@ class AsyncGitHubSession:
             limits=limits,
             follow_redirects=True
         )
-
+    
     async def request(self, method: str, url: str, raise_on_error: bool = True, **kwargs) -> httpx.Response:
         """Make async HTTP request with optional error handling"""
         try:
@@ -120,7 +118,6 @@ class AsyncGitHubSession:
                         error_data = response.json()
                 except:
                     pass
-                
                 error = handle_github_api_error(response.status_code, error_data, url)
                 raise error
             
@@ -132,21 +129,20 @@ class AsyncGitHubSession:
             raise NetworkError(f"Connection error: {e}")
         except httpx.HTTPError as e:
             raise NetworkError(f"HTTP error: {e}")
-
+    
     async def get(self, url: str, raise_on_error: bool = True, **kwargs) -> httpx.Response:
         """GET request"""
         return await self.request('GET', url, raise_on_error=raise_on_error, **kwargs)
-
+    
     async def close(self):
         """Close session"""
         await self.client.aclose()
-
+    
     async def __aenter__(self):
         return self
-
+    
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-
 
 class AsyncGitHubClient:
     """High-performance async GitHub client with optimized parallel processing - v1.0.0"""
@@ -157,7 +153,7 @@ class AsyncGitHubClient:
         self.rate_limit_manager = AsyncRateLimitManager(token)
         self.session = None
         self._semaphore = None
-
+    
     async def __aenter__(self):
         self.session = AsyncGitHubSession(self.token)
         
@@ -165,11 +161,11 @@ class AsyncGitHubClient:
         max_concurrent = 100 if self.token else 20
         self._semaphore = asyncio.Semaphore(max_concurrent)
         return self
-
+    
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
-
+    
     async def get_repository_info(self, owner: str, repo: str, safe_mode: bool = False) -> Dict[str, Any]:
         """Get basic repository information with safe mode option"""
         url = URLParser.build_api_url(owner, repo, "")
@@ -196,15 +192,13 @@ class AsyncGitHubClient:
                             error_data = response.json()
                     except:
                         pass
-                    
                     error = handle_github_api_error(response.status_code, error_data, url)
                     raise error
-
+            
             await self.rate_limit_manager.update_from_headers(dict(response.headers))
             await self.rate_limit_manager.consume_calls(1)
             
             repo_data = response.json()
-            
             return {
                 'name': repo_data['name'],
                 'full_name': repo_data['full_name'],
@@ -237,7 +231,7 @@ class AsyncGitHubClient:
                 }
             else:
                 raise
-
+    
     async def detect_default_branch(self, owner: str, repo: str) -> str:
         """Detect the default branch by testing ZIP availability"""
         # Test common branch names concurrently
@@ -256,7 +250,7 @@ class AsyncGitHubClient:
         
         self.logger.debug("Could not detect branch via ZIP, using 'main'")
         return 'main'
-
+    
     async def _test_zip_availability(self, owner: str, repo: str, branch: str) -> bool:
         """Test if ZIP download is available for given branch"""
         zip_url = URLParser.build_zip_url(owner, repo, branch)
@@ -269,7 +263,7 @@ class AsyncGitHubClient:
             return response.status_code in [200, 302]
         except:
             return False
-
+    
     async def download_repository_zip(self, owner: str, repo: str, branch: str = None) -> List[Dict[str, Any]]:
         """Download repository as ZIP with async streaming"""
         if not branch:
@@ -341,7 +335,7 @@ class AsyncGitHubClient:
                             self.logger.debug(f"Download progress: {progress:.1f}%")
                 
                 return await self._extract_zip_contents_async(content, f"{repo}-{branch}")
-                
+        
         except (PrivateRepositoryError, RepositoryTooLargeError):
             raise
         except httpx.TimeoutException:
@@ -352,7 +346,7 @@ class AsyncGitHubClient:
         except Exception as e:
             self.logger.debug(f"ZIP download failed: {e}")
             raise NetworkError(f"ZIP download failed: {e}")
-
+    
     async def _try_alternative_zip(self, owner: str, repo: str, branch: str) -> Optional[Tuple[bytes, str]]:
         """Try downloading ZIP for alternative branch"""
         try:
@@ -366,7 +360,7 @@ class AsyncGitHubClient:
             return None
         except:
             return None
-
+    
     async def _extract_zip_contents_async(self, zip_content: bytes, expected_prefix: str) -> List[Dict[str, Any]]:
         """Extract file information from ZIP content asynchronously"""
         # Run CPU-intensive ZIP extraction in thread pool
@@ -378,11 +372,10 @@ class AsyncGitHubClient:
             expected_prefix
         )
         return files
-
+    
     def _extract_zip_contents_sync(self, zip_content: bytes, expected_prefix: str) -> List[Dict[str, Any]]:
         """Synchronous ZIP extraction (runs in thread pool)"""
         files = []
-        
         try:
             with zipfile.ZipFile(BytesIO(zip_content)) as zip_file:
                 for zip_info in zip_file.infolist():
@@ -390,7 +383,6 @@ class AsyncGitHubClient:
                         continue
                     
                     file_path = zip_info.filename
-                    
                     if file_path.startswith(f"{expected_prefix}/"):
                         file_path = file_path[len(f"{expected_prefix}/"):]
                     elif "/" in file_path:
@@ -408,25 +400,23 @@ class AsyncGitHubClient:
                     try:
                         with zip_file.open(zip_info) as file:
                             content = file.read()
-                        
-                        if len(content) > Config.MAX_FILE_SIZE_BYTES:
-                            continue
-                        
-                        try:
-                            text_content = content.decode('utf-8')
-                        except UnicodeDecodeError:
-                            try:
-                                text_content = content.decode('latin-1')
-                            except UnicodeDecodeError:
+                            if len(content) > Config.MAX_FILE_SIZE_BYTES:
                                 continue
-                        
-                        files.append({
-                            'path': file_path,
-                            'size': len(content),
-                            'content': text_content,
-                            'priority': Config.get_file_priority(file_path)
-                        })
-                        
+                            
+                            try:
+                                text_content = content.decode('utf-8')
+                            except UnicodeDecodeError:
+                                try:
+                                    text_content = content.decode('latin-1')
+                                except UnicodeDecodeError:
+                                    continue
+                            
+                            files.append({
+                                'path': file_path,
+                                'size': len(content),
+                                'content': text_content,
+                                'priority': Config.get_file_priority(file_path)
+                            })
                     except Exception:
                         continue
             
@@ -436,7 +426,7 @@ class AsyncGitHubClient:
             raise NetworkError(f"Invalid ZIP file: {e}")
         except Exception as e:
             raise NetworkError(f"ZIP extraction failed: {e}")
-
+    
     async def get_repository_tree_api(self, owner: str, repo: str, branch: str = None) -> List[Dict[str, Any]]:
         """Get repository file tree using GitHub API"""
         if not branch:
@@ -447,6 +437,7 @@ class AsyncGitHubClient:
         try:
             async with self._semaphore:
                 response = await self.session.get(url)
+                
                 await self.rate_limit_manager.update_from_headers(dict(response.headers))
                 await self.rate_limit_manager.consume_calls(1)
                 
@@ -465,11 +456,11 @@ class AsyncGitHubClient:
                 
                 self.logger.debug(f"Retrieved {len(files)} files via API")
                 return files
-                
+        
         except Exception as e:
             self.logger.error(f"Failed to get repository tree via API: {e}")
             raise
-
+    
     async def download_single_file(self, file_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """Download a single file asynchronously with enhanced concurrency"""
         async with self._semaphore:
@@ -486,7 +477,6 @@ class AsyncGitHubClient:
                 await self.rate_limit_manager.consume_calls(1)
                 
                 content = response.content
-                
                 if len(content) > Config.MAX_FILE_SIZE_BYTES:
                     return None
                 
@@ -508,7 +498,7 @@ class AsyncGitHubClient:
             except Exception as e:
                 self.logger.debug(f"Failed to download {file_info['path']}: {e}")
                 return None
-
+    
     async def download_files_concurrently(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Enhanced concurrent file downloads with batching"""
         if not files:
@@ -543,7 +533,7 @@ class AsyncGitHubClient:
         
         self.logger.debug(f"Enhanced async download completed: {len(completed_files)} successful files")
         return completed_files
-
+    
     async def _try_api_method(self, owner: str, repo: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Try API method for private repository access"""
         self.logger.info("🔄 비동기 API 방식으로 Private 저장소 접근 중...")
@@ -570,7 +560,7 @@ class AsyncGitHubClient:
             raise
         except Exception as e:
             raise AuthenticationError(f"비동기 API 접근 실패: {e}")
-
+    
     async def analyze_repository(self, owner: str, repo: str, method: str = "auto") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """OPTIMIZED ASYNC: ZIP first, then token-aware fallback strategy - v1.0.0"""
         self.logger.debug(f"비동기 분석 시작: {owner}/{repo} (토큰: {'있음' if self.token else '없음'})")
@@ -607,7 +597,6 @@ class AsyncGitHubClient:
         
         except Exception as e:
             self.logger.error(f"💥 비동기 처리 중 예상치 못한 오류: {e}")
-            
             try:
                 repo_info = await self.get_repository_info(owner, repo, safe_mode=True)
             except:
@@ -620,33 +609,55 @@ class AsyncGitHubClient:
                     'default_branch': 'main',
                     'private': None
                 }
-            
             return [], repo_info
-
-    async def analyze_repository_async(self, repo_url: str, output_dir: str = "./results",
-                                     output_format: str = "bin", **kwargs) -> Dict[str, Any]:
+    
+    async def analyze_repository_async(
+        self, 
+        repo_url: str, 
+        output_dir: str = "./results",
+        output_format: str = "bin",
+        github_token: Optional[str] = None,
+        method: str = "auto",
+        verbose: bool = False,
+        dry_run: bool = False,
+        fallback: bool = True,
+        **kwargs
+    ) -> Dict[str, Any]:
         """
+        Enhanced async repository analysis method - v1.0.0
+        
         Args:
             repo_url: GitHub repository URL
             output_dir: Output directory path
             output_format: Output format ('json', 'bin', 'both')
-            **kwargs: Additional options (method, github_token, etc.)
+            github_token: GitHub access token
+            method: Analysis method ('auto', 'zip', 'api')
+            verbose: Enable verbose logging
+            dry_run: Dry run mode (no output files)
+            fallback: Enable fallback strategies
+            **kwargs: Additional options
         
         Returns:
             Dict: Analysis results with metadata, files, and output paths
         """
-        method = kwargs.pop('method', 'auto')  # Remove from kwargs
-        github_token = kwargs.pop('github_token', self.token)  # Remove from kwargs
+        # Update token if provided
+        if github_token and github_token != self.token:
+            self.token = github_token
+            self.rate_limit_manager.token = github_token
         
         # Use the global analyze_repository_async function
         return await analyze_repository_async(
             repo_url=repo_url,
             output_dir=output_dir,
             output_format=output_format,
-            github_token=github_token,
-            method=method
+            github_token=github_token or self.token,
+            method=method,
+            verbose=verbose,
+            dry_run=dry_run,
+            fallback=fallback,
+            **kwargs
         )
-
+    
     def _filter_and_prioritize_files(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Filter and prioritize files for download"""
         # Add priority to all files first
@@ -654,7 +665,6 @@ class AsyncGitHubClient:
             file_info['priority'] = Config.get_file_priority(file_info['path'])
         
         filtered_files = []
-        
         for file_info in files:
             path = file_info['path']
             
@@ -675,7 +685,6 @@ class AsyncGitHubClient:
         # Limit total size
         total_size = 0
         selected_files = []
-        
         for file_info in filtered_files:
             file_size = file_info.get('size', 0)
             if total_size + file_size <= Config.MAX_TOTAL_SIZE_BYTES:
@@ -686,7 +695,7 @@ class AsyncGitHubClient:
         
         self.logger.debug(f"Selected {len(selected_files)} files out of {len(files)} total")
         return selected_files
-
+    
     async def get_rate_limit_info(self) -> Dict[str, Any]:
         """Get current rate limit information"""
         return {
@@ -703,11 +712,29 @@ async def analyze_repository_async(
     output_dir: str = "./results",
     output_format: str = "bin",
     github_token: Optional[str] = None,
-    method: str = "auto"
+    method: str = "auto",
+    verbose: bool = False,
+    dry_run: bool = False,
+    fallback: bool = True,
+    **kwargs
 ) -> Dict[str, Any]:
     """
     Enhanced async convenience function for repository analysis - v1.0.0
     High-performance parallel processing with advanced error handling
+    
+    Args:
+        repo_url: GitHub repository URL
+        output_dir: Output directory path
+        output_format: Output format ('json', 'bin', 'both')
+        github_token: GitHub access token
+        method: Analysis method ('auto', 'zip', 'api')
+        verbose: Enable verbose logging
+        dry_run: Dry run mode (no output files)
+        fallback: Enable fallback strategies
+        **kwargs: Additional options
+    
+    Returns:
+        Dict: Analysis results with metadata, files, and output paths
     """
     # Local imports to avoid circular dependencies
     from .file_processor import FileProcessor
@@ -718,74 +745,90 @@ async def analyze_repository_async(
         parsed_url = URLParser.parse_github_url(repo_url)
         owner, repo = parsed_url['owner'], parsed_url['repo']
         
-        async with AsyncGitHubClient(github_token) as client:
+        # Create logger with appropriate verbosity
+        logger = AnalyzerLogger(verbose=verbose)
+        
+        async with AsyncGitHubClient(github_token, logger=logger) as client:
             files, repo_info = await client.analyze_repository(owner, repo, method)
-        
-        # Process files synchronously (CPU-bound)
-        file_processor = FileProcessor()
-        processed_files, processing_metadata = file_processor.process_files(files)
-        
-        metadata_generator = MetadataGenerator()
-        metadata = metadata_generator.generate_metadata(
-            processed_files, processing_metadata, repo_info, repo_url
-        )
-        
-        compact_metadata = metadata_generator.generate_compact_metadata(
-            processed_files, processing_metadata, repo_info, repo_url
-        )
-        
-        # Create output directory
-        base_output_dir = Path(output_dir)
-        repo_output_dir = base_output_dir / f"{owner}_{repo}"
-        FileUtils.ensure_directory(repo_output_dir)
-        
-        base_filename = f"{owner}_{repo}"
-        output_paths = {}
-        
-        # Save metadata files
-        meta_path = repo_output_dir / f"{base_filename}_meta.json"
-        with open(meta_path, 'w', encoding='utf-8') as f:
-            json.dump(metadata, f, ensure_ascii=False, indent=2)
-        output_paths['metadata'] = str(meta_path)
-        
-        compact_meta_path = repo_output_dir / f"{base_filename}_compact_meta.json"
-        with open(compact_meta_path, 'w', encoding='utf-8') as f:
-            json.dump(compact_metadata, f, ensure_ascii=False, separators=(',', ':'))
-        output_paths['compact_metadata'] = str(compact_meta_path)
-        
-        # Create optimized code data structure
-        code_data = {"f": {}}
-        for file_info in processed_files:
-            path = file_info.get('path', '')
-            content = file_info.get('content', '')
-            if path and content:
-                code_data["f"][path] = content
-        
-        # Save based on output format
-        if output_format in ["json", "both"]:
-            code_json_path = repo_output_dir / f"{base_filename}_code.json"
-            with open(code_json_path, 'w', encoding='utf-8') as f:
-                json.dump(code_data, f, ensure_ascii=False, separators=(',', ':'))
-            output_paths['code_json'] = str(code_json_path)
-        
-        if output_format in ["bin", "both"]:
-            code_bin_path = repo_output_dir / f"{base_filename}_code.json.gz"
-            json_str = json.dumps(code_data, ensure_ascii=False, separators=(',', ':'))
-            compressed_data = CompressionUtils.compress_data(json_str, "gzip")
-            with open(code_bin_path, 'wb') as f:
-                f.write(compressed_data)
-            output_paths['code_binary'] = str(code_bin_path)
-        
-        return {
-            'metadata': metadata,
-            'compact_metadata': compact_metadata,
-            'files': processed_files,
-            'repo_info': repo_info,
-            'processing_metadata': processing_metadata,
-            'output_paths': output_paths,
-            'success': True
-        }
-        
+            
+            # Skip file processing and output in dry_run mode
+            if dry_run:
+                return {
+                    'metadata': {},
+                    'compact_metadata': {},
+                    'files': files,
+                    'repo_info': repo_info,
+                    'processing_metadata': {},
+                    'output_paths': {},
+                    'success': True,
+                    'dry_run': True
+                }
+            
+            # Process files synchronously (CPU-bound)
+            file_processor = FileProcessor()
+            processed_files, processing_metadata = file_processor.process_files(files)
+            
+            metadata_generator = MetadataGenerator()
+            metadata = metadata_generator.generate_metadata(
+                processed_files, processing_metadata, repo_info, repo_url
+            )
+            
+            compact_metadata = metadata_generator.generate_compact_metadata(
+                processed_files, processing_metadata, repo_info, repo_url
+            )
+            
+            # Create output directory
+            base_output_dir = Path(output_dir)
+            repo_output_dir = base_output_dir / f"{owner}_{repo}"
+            FileUtils.ensure_directory(repo_output_dir)
+            
+            base_filename = f"{owner}_{repo}"
+            output_paths = {}
+            
+            # Save metadata files
+            meta_path = repo_output_dir / f"{base_filename}_meta.json"
+            with open(meta_path, 'w', encoding='utf-8') as f:
+                json.dump(metadata, f, ensure_ascii=False, indent=2)
+            output_paths['metadata'] = str(meta_path)
+            
+            compact_meta_path = repo_output_dir / f"{base_filename}_compact_meta.json"
+            with open(compact_meta_path, 'w', encoding='utf-8') as f:
+                json.dump(compact_metadata, f, ensure_ascii=False, separators=(',', ':'))
+            output_paths['compact_metadata'] = str(compact_meta_path)
+            
+            # Create optimized code data structure
+            code_data = {"f": {}}
+            for file_info in processed_files:
+                path = file_info.get('path', '')
+                content = file_info.get('content', '')
+                if path and content:
+                    code_data["f"][path] = content
+            
+            # Save based on output format
+            if output_format in ["json", "both"]:
+                code_json_path = repo_output_dir / f"{base_filename}_code.json"
+                with open(code_json_path, 'w', encoding='utf-8') as f:
+                    json.dump(code_data, f, ensure_ascii=False, separators=(',', ':'))
+                output_paths['code_json'] = str(code_json_path)
+            
+            if output_format in ["bin", "both"]:
+                code_bin_path = repo_output_dir / f"{base_filename}_code.json.gz"
+                json_str = json.dumps(code_data, ensure_ascii=False, separators=(',', ':'))
+                compressed_data = CompressionUtils.compress_data(json_str, "gzip")
+                with open(code_bin_path, 'wb') as f:
+                    f.write(compressed_data)
+                output_paths['code_binary'] = str(code_bin_path)
+            
+            return {
+                'metadata': metadata,
+                'compact_metadata': compact_metadata,
+                'files': processed_files,
+                'repo_info': repo_info,
+                'processing_metadata': processing_metadata,
+                'output_paths': output_paths,
+                'success': True
+            }
+    
     except Exception as e:
         return {
             'metadata': {},
