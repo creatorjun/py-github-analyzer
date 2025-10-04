@@ -4,7 +4,7 @@ High-performance GitHub repository analyzer with AI-optimized code extraction an
 """
 
 __version__ = "1.0.0"
-__author__ = "Han Jun-hee" 
+__author__ = "Han Jun-hee"
 __email__ = "createbrain2heart@gmail.com"
 
 # Check required dependencies
@@ -22,10 +22,9 @@ if not ASYNC_AVAILABLE:
         "Install with: pip install httpx aiofiles"
     )
 
-# Core imports
+# Core imports - ASYNC ONLY
 from .core import (
     GitHubRepositoryAnalyzer,
-    analyze_repository,
     analyze_repository_async,
 )
 
@@ -43,63 +42,93 @@ except ImportError:
 Analyzer = GitHubRepositoryAnalyzer
 GitHubAnalyzer = GitHubRepositoryAnalyzer
 
-# Main exports
-__all__ = [
-    'GitHubRepositoryAnalyzer',
-    'AsyncGitHubClient', 
-    'analyze_repository',
-    'analyze_repository_async',
-    'Analyzer',
-    'GitHubAnalyzer',
-    'get_version',
-    'TokenUtils'
-]
-
-def get_version() -> str:
-    """Return package version"""
+def get_version():
+    """Get package version"""
     return __version__
 
-def get_usage_examples():
-    """Return common usage examples"""
-    return {
-        'basic_sync': "import py_github_analyzer as pga; result = pga.analyze_repository('https://github.com/user/repo')",
-        'basic_async': "result = await pga.analyze_repository_async('https://github.com/user/repo')",
-        'with_token': "result = pga.analyze_repository('https://github.com/user/repo', github_token='your_token')",
-        'with_env_file': "# Create .env file with GITHUB_TOKEN=your_token\nresult = pga.analyze_repository('https://github.com/user/repo')",
-        'class_usage': "analyzer = pga.GitHubRepositoryAnalyzer(); result = await analyzer.analyze_repository('repo_url')"
-    }
-
-def get_token_sources():
-    """Return information about token sources"""
-    return {
-        'priority_order': [
-            '1. Function parameter (github_token=...)',
-            '2. GITHUB_TOKEN environment variable',
-            '3. GH_TOKEN environment variable',
-            '4. .env file GITHUB_TOKEN',
-            '5. .env file GH_TOKEN'
-        ],
-        'env_file_locations': [
-            'Current working directory (.env)',
-            'Parent directories (up to 3 levels)'
-        ],
-        'env_file_format': 'GITHUB_TOKEN=your_token_here'
-    }
-
 def check_env_file():
-    """Check for .env file and return status"""
-    if TOKEN_UTILS_AVAILABLE and TokenUtils:
+    """Check .env file status and token availability"""
+    if not TOKEN_UTILS_AVAILABLE:
+        return {
+            'env_support': False,
+            'error': 'TokenUtils not available'
+        }
+    
+    try:
         env_files = TokenUtils._find_env_files()
         env_vars = TokenUtils._load_env_variables()
         
         return {
             'env_files_found': len(env_files),
             'env_file_paths': env_files,
-            'github_token_in_env': 'GITHUB_TOKEN' in env_vars,
-            'gh_token_in_env': 'GH_TOKEN' in env_vars
+            'github_token_in_env': bool(env_vars.get('GITHUB_TOKEN')),
+            'gh_token_in_env': bool(env_vars.get('GH_TOKEN'))
         }
+    except Exception as e:
+        return {
+            'env_support': True,
+            'error': str(e),
+            'env_files_found': 0
+        }
+
+def get_token_sources():
+    """Get available token sources"""
+    if not TOKEN_UTILS_AVAILABLE:
+        return {'error': 'TokenUtils not available'}
     
-    return {
-        'error': 'TokenUtils not available',
-        'env_files_found': 0
-    }
+    try:
+        import os
+        sources = {}
+        
+        # System environment
+        if os.environ.get('GITHUB_TOKEN'):
+            sources['GITHUB_TOKEN_system'] = 'system environment'
+        if os.environ.get('GH_TOKEN'):
+            sources['GH_TOKEN_system'] = 'system environment'
+        
+        # .env files
+        env_vars = TokenUtils._load_env_variables()
+        if env_vars.get('GITHUB_TOKEN'):
+            sources['GITHUB_TOKEN_env'] = '.env file'
+        if env_vars.get('GH_TOKEN'):
+            sources['GH_TOKEN_env'] = '.env file'
+            
+        return sources
+    except Exception as e:
+        return {'error': str(e)}
+
+# Export main components
+__all__ = [
+    # Main classes and functions - ASYNC ONLY
+    'GitHubRepositoryAnalyzer',
+    'analyze_repository_async',
+    'AsyncGitHubClient',
+    
+    # Aliases
+    'Analyzer', 
+    'GitHubAnalyzer',
+    
+    # Utility functions
+    'get_version',
+    'check_env_file',
+    'get_token_sources',
+    
+    # Version info
+    '__version__'
+]
+
+# Print initialization info
+def _print_init_info():
+    """Print package initialization information"""
+    try:
+        token_status = "✅ Available" if TOKEN_UTILS_AVAILABLE else "❌ Not available"
+        print(f"py-github-analyzer v{__version__}")
+        print(f"  • Async support: ✅ Available")
+        print(f"  • .env support: {token_status}")
+    except:
+        pass  # Silent init
+
+# Only print info in development mode
+import os
+if os.environ.get('PY_GITHUB_ANALYZER_DEBUG'):
+    _print_init_info()

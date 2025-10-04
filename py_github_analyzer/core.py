@@ -3,13 +3,9 @@ GitHub Repository Analyzer Core Module
 High-performance async-first GitHub repository analysis
 """
 
-import os
-import json
-import time
 import asyncio
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple
-from threading import Lock
+from typing import Dict, List, Any, Optional
 
 from .config import Config
 from .utils import URLParser, TokenUtils
@@ -29,227 +25,245 @@ class GitHubRepositoryAnalyzer:
     def __init__(self, token: Optional[str] = None, logger: Optional[AnalyzerLogger] = None):
         """Initialize analyzer with optional token and logger"""
         # Auto-detect token from environment if not provided
-        self.token = TokenUtils.get_github_token(token)
+        self.token = TokenUtils.get_github_token(token) if TokenUtils else token
         self.logger = logger or get_logger()
-        self._lock = Lock()
+        self.client = AsyncGitHubClient(self.token, self.logger)
+        self.metadata_generator = MetadataGenerator()
+        self.file_processor = FileProcessor(self.logger)
         
         # Log token status
-        token_info = TokenUtils.get_token_info(self.token)
-        if token_info['status'] == 'provided':
-            if token_info['valid']:
-                self.logger.info(f"GitHub token loaded: {token_info['masked']} ({token_info['type']})")
-            else:
-                self.logger.warning(f"GitHub token format may be invalid: {token_info['masked']}")
+        if self.token:
+            try:
+                token_info = TokenUtils.get_token_info(self.token) if TokenUtils else {}
+                if token_info:
+                    self.logger.info(f"ℹ️  GitHub token loaded: {token_info.get('masked', 'provided')} ({token_info.get('type', 'unknown')})")
+                else:
+                    self.logger.info(f"ℹ️  GitHub token loaded: provided")
+            except Exception:
+                self.logger.info(f"ℹ️  GitHub token loaded: provided")
         else:
-            self.logger.info("No GitHub token found (using anonymous access)")
-    
-    async def analyze_repository(
-        self, 
+            self.logger.warning("⚠️  No GitHub token - rate limited to 60 requests/hour")
+
+    async def analyze_repository_async(
+        self,
         repo_url: str,
         output_dir: str = "./results",
-        output_format: str = "bin",
-        github_token: Optional[str] = None,
+        output_format: str = "both",
         method: str = "auto",
         verbose: bool = False,
         dry_run: bool = False,
         fallback: bool = True,
         **kwargs
     ) -> Dict[str, Any]:
-        """Analyze GitHub repository and generate structured output"""
+        """
+        Analyze a GitHub repository asynchronously
         
-        # Auto-detect token with priority: parameter > instance token > environment
-        active_token = TokenUtils.get_github_token(github_token) or self.token
-        
+        Args:
+            repo_url: GitHub repository URL
+            output_dir: Output directory for results
+            output_format: Output format ("json", "bin", or "both")
+            method: Analysis method ("auto", "api", or "zip")
+            verbose: Enable verbose logging
+            dry_run: Simulate analysis without actual processing
+            fallback: Enable fallback mode on errors
+            
+        Returns:
+            Dict containing analysis results
+        """
         try:
-            parsed_url = URLParser.parse_github_url(repo_url)
-            owner, repo = parsed_url['owner'], parsed_url['repo']
-        except ValidationError as e:
-            raise ValidationError(f"Invalid repository URL: {e}")
-        
-        if output_format not in Config.OUTPUT_FORMATS:
-            raise UnsupportedFormatError(
-                f"Unsupported output format: {output_format}",
-                output_format, Config.OUTPUT_FORMATS
-            )
-        
-        if dry_run:
-            self.logger.info("Dry-run mode: Simulating repository analysis")
-            return self._simulate_dry_run(owner, repo, output_dir, output_format)
-        
-        try:
-            async with AsyncGitHubClient(active_token, self.logger) as client:
-                files, repo_data = await client.analyze_repository(owner, repo, method)
+            # Parse repository URL
+            url_info = URLParser.parse_github_url(repo_url)
+            owner = url_info['owner']
+            repo = url_info['repo']
+            
+            if verbose:
+                self.logger.info(f"📂 Analyzing repository: {owner}/{repo}")
+                self.logger.info(f"🎯 Method: {method}")
+                self.logger.info(f"📁 Output: {output_dir}")
+                self.logger.info(f"📄 Format: {output_format}")
                 
-                self._validate_analysis_results(files, repo_url, repo_data)
-                
-                file_processor = FileProcessor(self.logger)
-                processed_files, processing_metadata = file_processor.process_files(files)
-                
-                metadata_generator = MetadataGenerator(self.logger)
-                metadata = metadata_generator.generate_metadata(
-                    processed_files, processing_metadata, repo_data, repo_url
-                )
-                compact_metadata = metadata_generator.generate_compact_metadata(
-                    processed_files, processing_metadata, repo_data, repo_url
-                )
-                
-                output_paths = self._save_results(
-                    processed_files, metadata, compact_metadata, 
-                    owner, repo, output_dir, output_format
-                )
-                
-                self._print_analysis_summary(processed_files, metadata, processing_metadata)
-                
+            if dry_run:
+                self.logger.info("🏃 Dry-run mode: Simulating analysis...")
                 return {
-                    'metadata': metadata,
-                    'compact_metadata': compact_metadata,
-                    'files': processed_files,
-                    'repo_info': repo_data,
-                    'processing_metadata': processing_metadata,
-                    'output_paths': output_paths,
-                    'success': True
+                    'success': True,
+                    'dry_run': True,
+                    'repository': f"{owner}/{repo}",
+                    'metadata': {
+                        'repo': f"{owner}/{repo}",
+                        'owner': owner,
+                        'name': repo,
+                        'lang': ['Simulated'],
+                        'size': 'Unknown'
+                    },
+                    'files': [],
+                    'output_paths': {},
+                    'fallback_mode': False
                 }
+            
+            # Get repository files
+            if method == "zip" or (method == "auto" and not self.token):
+                files = await self.client.get_files_from_zip(owner, repo)
+            else:
+                files = await self.client.get_files_from_api(owner, repo)
                 
-        except Exception as e:
-            if fallback:
-                self.logger.warning(f"Analysis failed: {e}. Using fallback mode.")
-                return self._create_empty_repository_result(repo_url, output_dir, output_format, str(e))
-            else:
-                raise
-    
-    def _validate_analysis_results(self, files: List[Dict], repo_url: str, repo_data: Dict):
-        """Validate analysis results and raise appropriate errors"""
-        if not files:
-            if repo_data.get('empty_repository', False):
-                raise EmptyRepositoryError(f"Repository is empty or contains no analyzable files: {repo_url}")
-            else:
-                self.logger.warning(f"No files extracted from repository: {repo_url}")
-    
-    def _simulate_dry_run(self, owner: str, repo: str, output_dir: str, output_format: str) -> Dict[str, Any]:
-        """Simulate repository analysis for dry-run mode"""
-        return {
-            'metadata': {'repo': f'{owner}/{repo}', 'dry_run': True},
-            'compact_metadata': {'repo': f'{owner}/{repo}', 'dry_run': True},
-            'files': [],
-            'repo_info': {'name': repo, 'owner': {'login': owner}},
-            'processing_metadata': {'total_files': 0, 'dry_run': True},
-            'output_paths': {'metadata': None, 'compact_metadata': None, 'files': None},
-            'success': True,
-            'dry_run': True
-        }
-    
-    def _create_empty_repository_result(self, repo_url: str, output_dir: str, output_format: str, error_message: str) -> Dict[str, Any]:
-        """Create fallback result for failed analysis"""
-        try:
-            parsed_url = URLParser.parse_github_url(repo_url)
-            owner, repo = parsed_url['owner'], parsed_url['repo']
-        except:
-            owner, repo = "unknown", "unknown"
-        
-        empty_metadata = {
-            "repo": f"{owner}/{repo}",
-            "desc": "Repository information unavailable",
-            "lang": "Unknown",
-            "size": "0KB",
-            "files": 0,
-            "main": [],
-            "deps": [],
-            "fallback_mode": True,
-            "analysis_date": time.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        
-        empty_compact_metadata = {
-            "repo": f"{owner}/{repo}",
-            "lang": "Unknown",
-            "size": "0KB", 
-            "files": 0,
-            "main": [],
-            "deps": [],
-            "fallback": True
-        }
-        
-        try:
-            output_paths = self._save_results(
-                [], empty_metadata, empty_compact_metadata,
-                owner, repo, output_dir, output_format
+            if not files:
+                self.logger.warning(f"⚠️  No files extracted from repository: {repo_url}")
+                if fallback:
+                    self.logger.warning("⚠️  Using fallback analysis mode...")
+                    return await self._fallback_analysis(owner, repo, output_dir, output_format)
+                else:
+                    raise EmptyRepositoryError(f"No files found in repository {owner}/{repo}")
+            
+            # Process files
+            processed_files = await self.file_processor.process_files_async(files)
+            
+            if not processed_files:
+                self.logger.warning("⚠️  No valid files to process")
+                if fallback:
+                    return await self._fallback_analysis(owner, repo, output_dir, output_format)
+                else:
+                    raise EmptyRepositoryError("No processable files found")
+            
+            # Generate metadata
+            metadata = await self.metadata_generator.generate_metadata_async(
+                owner, repo, processed_files
             )
-        except Exception as save_error:
-            self.logger.error(f"Failed to save fallback results: {save_error}")
-            output_paths = {}
-        
-        return {
-            'metadata': empty_metadata,
-            'compact_metadata': empty_compact_metadata,
-            'files': [],
-            'repo_info': {'name': repo, 'owner': {'login': owner}},
-            'processing_metadata': {'total_files': 0, 'fallback_mode': True},
-            'output_paths': output_paths,
-            'success': True,
-            'fallback_mode': True,
-            'error_message': error_message
-        }
+            
+            # Calculate statistics
+            total_lines = sum(f.get('lines', 0) for f in processed_files if isinstance(f, dict))
+            total_size = sum(len(f.get('content', '')) for f in processed_files if isinstance(f, dict))
+            
+            self.logger.info(f"ℹ️  Analysis completed: {len(processed_files)} files, {total_lines:,} lines")
+            self.logger.info(f"ℹ️  Primary language: {metadata.get('lang', ['Unknown'])[0] if metadata.get('lang') else 'Unknown'}")
+            
+            # Save output
+            output_paths = await self._save_output_async(
+                output_dir, output_format, metadata, processed_files, f"{owner}_{repo}"
+            )
+            
+            return {
+                'success': True,
+                'repository': f"{owner}/{repo}",
+                'metadata': metadata,
+                'files': processed_files,
+                'output_paths': output_paths,
+                'statistics': {
+                    'total_files': len(processed_files),
+                    'total_lines': total_lines,
+                    'total_size': total_size
+                },
+                'fallback_mode': False
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ Unexpected error during async processing: {e}")
+            
+            if fallback and not isinstance(e, (ValidationError, AuthenticationError)):
+                try:
+                    url_info = URLParser.parse_github_url(repo_url)
+                    return await self._fallback_analysis(
+                        url_info['owner'], url_info['repo'], output_dir, output_format
+                    )
+                except Exception as fallback_error:
+                    self.logger.error(f"❌ Fallback analysis also failed: {fallback_error}")
+            
+            return {
+                'success': False,
+                'error_message': str(e),
+                'repository': repo_url,
+                'fallback_mode': False
+            }
     
-    def _save_results(
-        self, 
-        processed_files: List[Dict], 
-        metadata: Dict, 
-        compact_metadata: Dict,
-        owner: str, 
-        repo: str, 
-        output_dir: str, 
-        output_format: str
+    async def _fallback_analysis(
+        self, owner: str, repo: str, output_dir: str, output_format: str
+    ) -> Dict[str, Any]:
+        """Perform fallback analysis with basic repository information"""
+        try:
+            # Try to get basic repo info
+            repo_info = await self.client.get_repository_info(owner, repo)
+            
+            metadata = {
+                'repo': f"{owner}/{repo}",
+                'owner': owner,
+                'name': repo,
+                'lang': [repo_info.get('language') or 'Unknown'],
+                'size': repo_info.get('size', 0),
+                'description': repo_info.get('description', ''),
+                'stars': repo_info.get('stargazers_count', 0),
+                'forks': repo_info.get('forks_count', 0),
+                'created_at': repo_info.get('created_at', ''),
+                'updated_at': repo_info.get('updated_at', ''),
+                'deps': []
+            }
+            
+            # Save minimal output
+            output_paths = await self._save_output_async(
+                output_dir, output_format, metadata, [], f"{owner}_{repo}"
+            )
+            
+            return {
+                'success': True,
+                'repository': f"{owner}/{repo}",
+                'metadata': metadata,
+                'files': [],
+                'output_paths': output_paths,
+                'fallback_mode': True,
+                'warning': 'Limited analysis - could not access repository files'
+            }
+            
+        except Exception as e:
+            return {
+                'success': False,
+                'error_message': f"Complete analysis failure: {str(e)}",
+                'repository': f"{owner}/{repo}",
+                'fallback_mode': True
+            }
+    
+    async def _save_output_async(
+        self, output_dir: str, output_format: str, metadata: Dict, files: List, prefix: str
     ) -> Dict[str, str]:
-        """Save analysis results to files"""
+        """Save analysis output in specified format"""
+        import json
+        import pickle
+        from pathlib import Path
+        
+        output_paths = {}
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
         
-        base_filename = f"{owner}_{repo}"
-        output_paths = {}
-        
-        if output_format in ["json", "both"]:
-            metadata_path = output_path / f"{base_filename}_meta.json"
-            compact_path = output_path / f"{base_filename}_compact_meta.json"
+        try:
+            if output_format in ["json", "both"]:
+                json_path = output_path / f"{prefix}_analysis.json"
+                with open(json_path, 'w', encoding='utf-8') as f:
+                    json.dump({
+                        'metadata': metadata,
+                        'files': files,
+                        'generated_at': str(Path().cwd()),
+                        'version': Config.VERSION
+                    }, f, indent=2, ensure_ascii=False)
+                output_paths['json'] = str(json_path)
+                
+            if output_format in ["bin", "both"]:
+                bin_path = output_path / f"{prefix}_analysis.pkl"
+                with open(bin_path, 'wb') as f:
+                    pickle.dump({
+                        'metadata': metadata,
+                        'files': files,
+                        'generated_at': str(Path().cwd()),
+                        'version': Config.VERSION
+                    }, f)
+                output_paths['bin'] = str(bin_path)
+                
+        except Exception as e:
+            self.logger.warning(f"⚠️  Could not save output files: {e}")
             
-            with open(metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata, f, indent=2, ensure_ascii=False)
-            
-            with open(compact_path, 'w', encoding='utf-8') as f:
-                json.dump(compact_metadata, f, ensure_ascii=False)
-            
-            output_paths['metadata'] = str(metadata_path)
-            output_paths['compact_metadata'] = str(compact_path)
-        
-        if output_format in ["bin", "both"] and processed_files:
-            files_data = {"f": {file_info['path']: file_info['content'] for file_info in processed_files if file_info.get('path') and file_info.get('content')}}
-            
-            code_path = output_path / f"{base_filename}_code.json"
-            with open(code_path, 'w', encoding='utf-8') as f:
-                json.dump(files_data, f, ensure_ascii=False)
-            
-            output_paths['files'] = str(code_path)
-        
         return output_paths
-    
-    def _print_analysis_summary(self, files: List[Dict], metadata: Dict, processing_metadata: Dict):
-        """Print analysis summary"""
-        total_files = len(files)
-        total_lines = sum(f.get('lines', 0) for f in files)
-        languages = metadata.get('lang', [])
-        
-        self.logger.info(f"Analysis completed: {total_files} files, {total_lines:,} lines")
-        if languages:
-            self.logger.info(f"Primary language: {languages[0]}")
-        
-        deps = metadata.get('deps', [])
-        if deps:
-            self.logger.info(f"Dependencies found: {len(deps)}")
 
-
-# Global convenience functions
+# Convenience async function
 async def analyze_repository_async(
     repo_url: str,
     output_dir: str = "./results", 
-    output_format: str = "bin",
+    output_format: str = "both",
     github_token: Optional[str] = None,
     method: str = "auto",
     verbose: bool = False,
@@ -257,52 +271,30 @@ async def analyze_repository_async(
     fallback: bool = True,
     **kwargs
 ) -> Dict[str, Any]:
-    """Async convenience function for repository analysis"""
-    # Auto-detect token if not provided
-    active_token = TokenUtils.get_github_token(github_token)
+    """
+    Async convenience function for repository analysis
     
-    analyzer = GitHubRepositoryAnalyzer(token=active_token)
-    if verbose:
-        from .logger import set_verbose
-        set_verbose(True)
-    
-    return await analyzer.analyze_repository(
+    Args:
+        repo_url: GitHub repository URL
+        output_dir: Output directory
+        output_format: Output format ("json", "bin", "both")
+        github_token: GitHub token (auto-detected if None)
+        method: Analysis method ("auto", "api", "zip")
+        verbose: Enable verbose logging
+        dry_run: Simulate without processing
+        fallback: Enable fallback mode
+        
+    Returns:
+        Analysis results dictionary
+    """
+    analyzer = GitHubRepositoryAnalyzer(token=github_token)
+    return await analyzer.analyze_repository_async(
         repo_url=repo_url,
         output_dir=output_dir,
         output_format=output_format,
-        github_token=github_token,
         method=method,
         verbose=verbose,
         dry_run=dry_run,
-        fallback=fallback
-    )
-
-def analyze_repository(
-    repo_url: str,
-    output_dir: str = "./results",
-    output_format: str = "bin",
-    github_token: Optional[str] = None,
-    method: str = "auto",
-    verbose: bool = False,
-    **kwargs
-) -> Dict[str, Any]:
-    """Sync wrapper around async analysis function"""
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            raise RuntimeError(
-                "Cannot use sync wrapper inside async context. "
-                "Use 'analyze_repository_async' instead."
-            )
-    except RuntimeError:
-        pass
-    
-    return asyncio.run(analyze_repository_async(
-        repo_url=repo_url,
-        output_dir=output_dir,
-        output_format=output_format,
-        github_token=github_token,
-        method=method,
-        verbose=verbose,
+        fallback=fallback,
         **kwargs
-    ))
+    )

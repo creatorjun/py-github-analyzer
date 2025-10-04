@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-github-analyzer"
-version = "1.3.0"
+version = "1.3.5"
 description = "High-performance async GitHub repository analyzer with AI-optimized code extraction"
 authors = [
     {name = "Han Jun-hee", email = "createbrain2heart@gmail.com"}

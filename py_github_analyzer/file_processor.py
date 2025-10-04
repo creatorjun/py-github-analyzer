@@ -5,9 +5,8 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Set
 from collections import defaultdict
 import hashlib
-
+from .utils import TokenUtils, ValidationUtils
 from .config import Config
-from .utils import TextUtils, ValidationUtils
 from .logger import AnalyzerLogger
 
 
@@ -705,7 +704,7 @@ class FileProcessor:
                     continue
                 
                 # Clean content for JSON safety
-                cleaned_content = TextUtils.clean_json_string(content)
+                cleaned_content = TokenUtils.clean_json_string(content)
                 
                 # Validate content size after cleaning
                 if len(cleaned_content.encode('utf-8')) > Config.MAX_FILE_SIZE_BYTES:

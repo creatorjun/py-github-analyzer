@@ -15,7 +15,7 @@ from typing import Dict, List, Union, Callable, Optional
 import tempfile
 import shutil
 from contextlib import contextmanager
-from functools import wraps, lru_cache
+from functools import wraps
 
 from .config import Config
 from .exceptions import ValidationError, CompressionError

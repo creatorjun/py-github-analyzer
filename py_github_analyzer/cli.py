@@ -7,6 +7,7 @@ import os
 import sys
 import asyncio
 import argparse
+from pathlib import Path
 
 # Windows UTF-8 encoding setup
 if os.name == 'nt':
@@ -58,9 +59,11 @@ def create_argument_parser():
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
+    # URL은 --check-env일 때만 선택사항으로 만들기
     parser.add_argument(
         "url",
-        help="GitHub repository URL"
+        nargs='?',  # URL을 선택사항으로 변경
+        help="GitHub repository URL (required unless using --check-env)"
     )
     
     parser.add_argument(
@@ -341,6 +344,10 @@ async def async_main():
         print_banner()
         success = check_env_status()
         return 0 if success else 1
+    
+    # URL 필수 검증 (--check-env가 아닐 때만)
+    if not args.url:
+        parser.error("URL is required unless using --check-env")
     
     logger = get_logger()
     

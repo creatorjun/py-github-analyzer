@@ -14,6 +14,16 @@ class Config:
     GITHUB_RAW_BASE = "https://raw.githubusercontent.com"
     GITHUB_ARCHIVE_BASE = "https://github.com"
     
+    # Branch priority for repository analysis
+    DEFAULT_BRANCH_PRIORITY = [
+        'main',
+        'master', 
+        'develop',
+        'dev',
+        'development',
+        'trunk'
+    ]
+    
     # Rate limiting
     DEFAULT_RATE_LIMIT = 60  # requests per hour without token
     AUTHENTICATED_RATE_LIMIT = 5000  # requests per hour with token
@@ -26,6 +36,8 @@ class Config:
     # File processing
     MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB per file
     MAX_REPOSITORY_SIZE = 500 * 1024 * 1024  # 500MB total
+    MAX_TOTAL_SIZE_MB = 500  # Maximum total repository size in MB
+    MAX_INDIVIDUAL_FILE_SIZE_MB = 10  # Maximum individual file size in MB
     MAX_FILES_COUNT = 10000  # maximum files to process
     
     # Output formats
@@ -57,7 +69,7 @@ class Config:
         'dockerfile': ['Dockerfile', '.dockerfile'],
         'config': ['.ini', '.cfg', '.conf', '.toml']
     }
-    
+
     # Binary extensions to skip
     BINARY_EXTENSIONS = {
         '.exe', '.dll', '.so', '.dylib', '.a', '.lib', '.o', '.obj',
@@ -67,7 +79,7 @@ class Config:
         '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
         '.woff', '.woff2', '.ttf', '.eot', '.otf'
     }
-    
+
     # Files to always skip
     SKIP_FILES = {
         '.gitignore', '.gitattributes', '.gitmodules',
@@ -76,7 +88,7 @@ class Config:
         '.DS_Store', 'Thumbs.db',
         '.eslintrc', '.prettierrc', '.editorconfig'
     }
-    
+
     # Directories to skip
     SKIP_DIRECTORIES = {
         '.git', '.svn', '.hg', '.bzr',
@@ -87,7 +99,7 @@ class Config:
         'coverage', '.coverage', '.nyc_output',
         'logs', 'tmp', 'temp', '.tmp'
     }
-    
+
     # Language detection patterns
     LANGUAGE_PATTERNS = {
         'python': {'extensions': ['.py'], 'files': ['setup.py', 'requirements.txt']},
@@ -101,7 +113,7 @@ class Config:
         'php': {'extensions': ['.php'], 'files': ['composer.json']},
         'ruby': {'extensions': ['.rb'], 'files': ['Gemfile', 'Rakefile']},
     }
-    
+
     # Dependency detection patterns
     DEPENDENCY_FILES = {
         'python': ['requirements.txt', 'Pipfile', 'pyproject.toml', 'setup.py'],
@@ -113,7 +125,7 @@ class Config:
         'php': ['composer.json', 'composer.lock'],
         'ruby': ['Gemfile', 'Gemfile.lock', '.gemspec']
     }
-    
+
     # Analysis methods
     ANALYSIS_METHODS = ["auto", "api", "zip"]
     DEFAULT_ANALYSIS_METHOD = "auto"
