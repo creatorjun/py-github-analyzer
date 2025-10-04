@@ -434,7 +434,6 @@ temp/
 # Keep test fixtures
 !tests/fixtures/
 !tests/data/
-test.py
 
 # ===================================================================
 # END OF .gitignore
