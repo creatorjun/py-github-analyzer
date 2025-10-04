@@ -39,7 +39,7 @@ from .logger import AnalyzerLogger
 
 
 class AsyncRateLimitManager:
-    """Async-safe GitHub API rate limit management"""
+    """Async-safe GitHub API rate limit management with race condition protection"""
     
     def __init__(self, token: Optional[str] = None):
         self.token = token
@@ -47,6 +47,7 @@ class AsyncRateLimitManager:
         self.remaining = self.limit
         self.reset_time = int(time.time()) + 3600
         self._lock = asyncio.Lock()
+        self._api_call_lock = asyncio.Lock()  # 전체 API 호출 과정을 보호하는 락
 
     async def update_from_headers(self, headers: Dict[str, str]):
         """Update rate limit info from response headers"""
@@ -74,6 +75,38 @@ class AsyncRateLimitManager:
         wait_time = self.wait_time_until_reset()
         if wait_time > 0 and self.remaining <= Config.RATE_LIMIT_BUFFER:
             await asyncio.sleep(min(wait_time, 300))  # Max 5 minutes wait
+
+    async def execute_api_call(self, api_call_func, required_calls: int = 1):
+        """
+        Execute API call with atomic rate limit management
+        This prevents race conditions by making the entire check-call-update process atomic
+        """
+        async with self._api_call_lock:
+            # Step 1: Check rate limit
+            if not await self.check_rate_limit(required_calls):
+                await self.wait_for_rate_limit_reset()
+                
+                # Re-check after waiting
+                if not await self.check_rate_limit(required_calls):
+                    raise RateLimitExceededError(
+                        "Rate limit still exceeded after waiting",
+                        reset_time=self.reset_time,
+                        remaining=self.remaining
+                    )
+            
+            # Step 2: Execute API call
+            try:
+                response = await api_call_func()
+                
+                # Step 3: Update rate limit info from response headers
+                await self.update_from_headers(dict(response.headers))
+                await self.consume_calls(required_calls)
+                
+                return response
+                
+            except Exception as e:
+                # If API call failed, don't consume rate limit calls
+                raise e
 
 
 class AsyncGitHubSession:
@@ -180,11 +213,11 @@ class AsyncGitHubClient:
         url = URLParser.build_api_url(owner, repo, "")
         
         try:
-            response = await self.session.get(url, raise_on_error=not safe_mode)
-            
-            # Check if request was successful
-            if not response.is_success:
-                if safe_mode:
+            if safe_mode:
+                # Safe mode: don't use rate limit protection for basic info
+                response = await self.session.get(url, raise_on_error=False)
+                
+                if not response.is_success:
                     return {
                         'name': repo,
                         'full_name': f'{owner}/{repo}',
@@ -194,19 +227,11 @@ class AsyncGitHubClient:
                         'default_branch': 'main',
                         'private': None
                     }
-                else:
-                    error_data = None
-                    try:
-                        if response.content:
-                            error_data = response.json()
-                    except:
-                        pass
-                    
-                    error = handle_github_api_error(response.status_code, error_data, url)
-                    raise error
-            
-            await self.rate_limit_manager.update_from_headers(dict(response.headers))
-            await self.rate_limit_manager.consume_calls(1)
+            else:
+                # Use atomic rate limit management for API calls
+                response = await self.rate_limit_manager.execute_api_call(
+                    lambda: self.session.get(url)
+                )
             
             repo_data = response.json()
             
@@ -487,7 +512,7 @@ class AsyncGitHubClient:
             raise NetworkError(f"ZIP extraction failed: {e}")
 
     async def get_repository_tree_api(self, owner: str, repo: str, branch: str = None) -> List[Dict[str, Any]]:
-        """Get repository file tree using GitHub API"""
+        """Get repository file tree using GitHub API with atomic rate limit management"""
         if not branch:
             branch = 'main'
         
@@ -495,10 +520,10 @@ class AsyncGitHubClient:
         
         try:
             async with self._semaphore:
-                response = await self.session.get(url)
-                
-                await self.rate_limit_manager.update_from_headers(dict(response.headers))
-                await self.rate_limit_manager.consume_calls(1)
+                # Use atomic API call execution
+                response = await self.rate_limit_manager.execute_api_call(
+                    lambda: self.session.get(url)
+                )
                 
                 tree_data = response.json()
                 files = []
@@ -521,19 +546,16 @@ class AsyncGitHubClient:
             raise
 
     async def download_single_file(self, file_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Download a single file asynchronously with enhanced concurrency"""
+        """Download a single file asynchronously with atomic rate limit management"""
         async with self._semaphore:
-            if not await self.rate_limit_manager.check_rate_limit(1):
-                await self.rate_limit_manager.wait_for_rate_limit_reset()
-            
             try:
-                response = await self.session.get(
-                    file_info['download_url'],
-                    timeout=Config.TIMEOUT_CONFIG['http_timeout']
+                # Use atomic API call execution to prevent race conditions
+                response = await self.rate_limit_manager.execute_api_call(
+                    lambda: self.session.get(
+                        file_info['download_url'],
+                        timeout=Config.TIMEOUT_CONFIG['http_timeout']
+                    )
                 )
-                
-                await self.rate_limit_manager.update_from_headers(dict(response.headers))
-                await self.rate_limit_manager.consume_calls(1)
                 
                 content = response.content
                 if len(content) > Config.MAX_FILE_SIZE_BYTES:
@@ -601,6 +623,7 @@ class AsyncGitHubClient:
         try:
             repo_info = await self.get_repository_info(owner, repo, safe_mode=False)
             
+            # Check if we have enough rate limit for tree API call
             if not await self.rate_limit_manager.check_rate_limit(10):
                 raise RateLimitExceededError(
                     "API rate limit approaching. Please retry later or use ZIP method.",
