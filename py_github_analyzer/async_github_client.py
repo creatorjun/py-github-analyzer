@@ -21,7 +21,7 @@ except ImportError:
 from .config import Config
 from .exceptions import (
     NetworkError,
-    RateLimitExceededError, 
+    RateLimitExceededError,
     AuthenticationError,
     RepositoryNotFoundError,
     RepositoryTooLargeError,
@@ -81,7 +81,7 @@ class AsyncGitHubSession:
         self.token = token
         self.timeout = timeout
         
-        # Setup headers
+        # Setup HTTP headers for GitHub API
         headers = {
             'Accept': 'application/vnd.github.v3+json',
             'User-Agent': 'py-github-analyzer/1.0.0'
@@ -131,11 +131,11 @@ class AsyncGitHubSession:
             raise NetworkError(f"HTTP error: {e}")
     
     async def get(self, url: str, raise_on_error: bool = True, **kwargs) -> httpx.Response:
-        """GET request"""
+        """GET request wrapper"""
         return await self.request('GET', url, raise_on_error=raise_on_error, **kwargs)
     
     async def close(self):
-        """Close session"""
+        """Close HTTP session"""
         await self.client.aclose()
     
     async def __aenter__(self):
@@ -145,7 +145,7 @@ class AsyncGitHubSession:
         await self.close()
 
 class AsyncGitHubClient:
-    """High-performance async GitHub client with optimized parallel processing - v1.0.0"""
+    """High-performance async GitHub client with optimized parallel processing"""
     
     def __init__(self, token: Optional[str] = None, logger: Optional[AnalyzerLogger] = None):
         self.token = token
@@ -310,7 +310,7 @@ class AsyncGitHubClient:
                 elif not response.is_success:
                     raise NetworkError(f"Failed to download ZIP: HTTP {response.status_code}")
                 
-                # Check content length
+                # Check content length for size limits
                 content_length = response.headers.get('content-length')
                 if content_length:
                     size_mb = int(content_length) / (1024 * 1024)
@@ -329,6 +329,7 @@ class AsyncGitHubClient:
                     content += chunk
                     downloaded += len(chunk)
                     
+                    # Log progress for large downloads
                     if content_length:
                         progress = (downloaded / int(content_length)) * 100
                         if downloaded % (chunk_size * 100) == 0:
@@ -383,6 +384,7 @@ class AsyncGitHubClient:
                         continue
                     
                     file_path = zip_info.filename
+                    # Remove repository prefix from file paths
                     if file_path.startswith(f"{expected_prefix}/"):
                         file_path = file_path[len(f"{expected_prefix}/"):]
                     elif "/" in file_path:
@@ -391,9 +393,11 @@ class AsyncGitHubClient:
                     if not file_path:
                         continue
                     
+                    # Skip excluded directories
                     if any(Config.is_excluded_directory(part) for part in file_path.split('/')):
                         continue
                     
+                    # Skip binary files
                     if Config.is_binary_file(file_path):
                         continue
                     
@@ -403,6 +407,7 @@ class AsyncGitHubClient:
                             if len(content) > Config.MAX_FILE_SIZE_BYTES:
                                 continue
                             
+                            # Try to decode as text
                             try:
                                 text_content = content.decode('utf-8')
                             except UnicodeDecodeError:
@@ -480,6 +485,7 @@ class AsyncGitHubClient:
                 if len(content) > Config.MAX_FILE_SIZE_BYTES:
                     return None
                 
+                # Try to decode as text
                 try:
                     text_content = content.decode('utf-8')
                 except UnicodeDecodeError:
@@ -536,14 +542,14 @@ class AsyncGitHubClient:
     
     async def _try_api_method(self, owner: str, repo: str) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
         """Try API method for private repository access"""
-        self.logger.info("🔄 비동기 API 방식으로 Private 저장소 접근 중...")
+        self.logger.info("Attempting private repository access via async API...")
         
         try:
             repo_info = await self.get_repository_info(owner, repo, safe_mode=False)
             
             if not await self.rate_limit_manager.check_rate_limit(10):
                 raise RateLimitExceededError(
-                    "API 호출 제한에 근접했습니다. 잠시 후 재시도하거나 ZIP 방식을 사용하세요.",
+                    "API rate limit approaching. Please retry later or use ZIP method.",
                     reset_time=self.rate_limit_manager.reset_time,
                     remaining=self.rate_limit_manager.remaining
                 )
@@ -559,44 +565,55 @@ class AsyncGitHubClient:
         except (AuthenticationError, RepositoryNotFoundError):
             raise
         except Exception as e:
-            raise AuthenticationError(f"비동기 API 접근 실패: {e}")
+            raise AuthenticationError(f"Async API access failed: {e}")
     
     async def analyze_repository(self, owner: str, repo: str, method: str = "auto") -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """OPTIMIZED ASYNC: ZIP first, then token-aware fallback strategy - v1.0.0"""
-        self.logger.debug(f"비동기 분석 시작: {owner}/{repo} (토큰: {'있음' if self.token else '없음'})")
+        """
+        Optimized async analysis: ZIP first, then token-aware fallback strategy
+        
+        Args:
+            owner: Repository owner username
+            repo: Repository name
+            method: Analysis method ('auto', 'zip', 'api')
+            
+        Returns:
+            Tuple of (files, repo_info)
+        """
+        self.logger.debug(f"Starting async analysis: {owner}/{repo} (token: {'available' if self.token else 'not available'})")
         
         # Step 1: Always try ZIP download first (async)
         try:
-            self.logger.debug("📦 비동기 ZIP 다운로드 시도 중...")
+            self.logger.debug("Attempting async ZIP download...")
             files = await self.download_repository_zip(owner, repo)
             repo_info = await self.get_repository_info(owner, repo, safe_mode=True)
             
-            self.logger.info(f"✅ 비동기 ZIP 다운로드 성공! ({len(files)}개 파일)")
+            self.logger.info(f"Async ZIP download successful! ({len(files)} files)")
             return files, repo_info
             
         except PrivateRepositoryError:
-            self.logger.debug("🔒 ZIP 접근 실패 - Private 저장소로 추정됨")
+            self.logger.debug("ZIP access failed - likely private repository")
             
             if self.token:
                 try:
                     return await self._try_api_method(owner, repo)
                 except RateLimitExceededError as e:
                     reset_minutes = (e.reset_time - int(time.time())) // 60 if e.reset_time else 0
-                    self.logger.warning(f"⏰ API 호출 제한 초과! {reset_minutes}분 후 재시도 가능합니다.")
-                    self.logger.info("💡 제한 해제 후 다시 시도하거나 다른 토큰을 사용하세요.")
+                    self.logger.warning(f"API rate limit exceeded! Retry available in {reset_minutes} minutes.")
+                    self.logger.info("Please wait for rate limit reset or try with a different token.")
                     raise
                 except AuthenticationError as e:
-                    self.logger.error("🔐 토큰 권한 부족 또는 저장소 접근 불가")
-                    self.logger.info("💡 토큰에 'repo' 권한이 있는지 확인하세요.")
+                    self.logger.error("Token permission insufficient or repository access denied")
+                    self.logger.info("Please verify that your token has 'repo' scope access.")
                     raise
             else:
-                self.logger.error("🔒 Private 저장소로 추정됩니다.")
-                self.logger.info("💡 Private 저장소 접근을 위해서는 GitHub 토큰이 필요합니다.")
+                self.logger.error("Private repository detected.")
+                self.logger.info("GitHub token required for private repository access.")
                 message = create_private_repo_guidance_message(owner, repo, has_token=False)
                 raise PrivateRepositoryError(message, f"https://github.com/{owner}/{repo}")
         
         except Exception as e:
-            self.logger.error(f"💥 비동기 처리 중 예상치 못한 오류: {e}")
+            self.logger.error(f"Unexpected error during async processing: {e}")
+            # Return empty results with safe repo info
             try:
                 repo_info = await self.get_repository_info(owner, repo, safe_mode=True)
             except:
@@ -611,53 +628,6 @@ class AsyncGitHubClient:
                 }
             return [], repo_info
     
-    async def analyze_repository_async(
-        self, 
-        repo_url: str, 
-        output_dir: str = "./results",
-        output_format: str = "bin",
-        github_token: Optional[str] = None,
-        method: str = "auto",
-        verbose: bool = False,
-        dry_run: bool = False,
-        fallback: bool = True,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Enhanced async repository analysis method - v1.0.0
-        
-        Args:
-            repo_url: GitHub repository URL
-            output_dir: Output directory path
-            output_format: Output format ('json', 'bin', 'both')
-            github_token: GitHub access token
-            method: Analysis method ('auto', 'zip', 'api')
-            verbose: Enable verbose logging
-            dry_run: Dry run mode (no output files)
-            fallback: Enable fallback strategies
-            **kwargs: Additional options
-        
-        Returns:
-            Dict: Analysis results with metadata, files, and output paths
-        """
-        # Update token if provided
-        if github_token and github_token != self.token:
-            self.token = github_token
-            self.rate_limit_manager.token = github_token
-        
-        # Use the global analyze_repository_async function
-        return await analyze_repository_async(
-            repo_url=repo_url,
-            output_dir=output_dir,
-            output_format=output_format,
-            github_token=github_token or self.token,
-            method=method,
-            verbose=verbose,
-            dry_run=dry_run,
-            fallback=fallback,
-            **kwargs
-        )
-    
     def _filter_and_prioritize_files(self, files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Filter and prioritize files for download"""
         # Add priority to all files first
@@ -668,12 +638,15 @@ class AsyncGitHubClient:
         for file_info in files:
             path = file_info['path']
             
+            # Skip excluded directories
             if any(Config.is_excluded_directory(part) for part in path.split('/')):
                 continue
             
+            # Skip binary files
             if Config.is_binary_file(path):
                 continue
             
+            # Skip files that are too large
             if file_info.get('size', 0) > Config.MAX_FILE_SIZE_BYTES:
                 continue
             
@@ -706,7 +679,7 @@ class AsyncGitHubClient:
         }
 
 
-# Global convenience function
+# Main user API: Global function
 async def analyze_repository_async(
     repo_url: str,
     output_dir: str = "./results",
@@ -719,8 +692,10 @@ async def analyze_repository_async(
     **kwargs
 ) -> Dict[str, Any]:
     """
-    Enhanced async convenience function for repository analysis - v1.0.0
+    Enhanced async convenience function for repository analysis
     High-performance parallel processing with advanced error handling
+    
+    User-friendly API: Simple function call for all features
     
     Args:
         repo_url: GitHub repository URL
@@ -735,6 +710,18 @@ async def analyze_repository_async(
     
     Returns:
         Dict: Analysis results with metadata, files, and output paths
+        
+    Example:
+        # Basic usage
+        result = await analyze_repository_async("https://github.com/user/repo")
+        
+        # Advanced usage
+        result = await analyze_repository_async(
+            "https://github.com/user/repo",
+            output_dir="./my_results",
+            github_token="ghp_xxxxxxxxxxxx",
+            verbose=True
+        )
     """
     # Local imports to avoid circular dependencies
     from .file_processor import FileProcessor
@@ -764,7 +751,7 @@ async def analyze_repository_async(
                     'dry_run': True
                 }
             
-            # Process files synchronously (CPU-bound)
+            # Process files synchronously (CPU-bound operations)
             file_processor = FileProcessor()
             processed_files, processing_metadata = file_processor.process_files(files)
             
@@ -777,7 +764,7 @@ async def analyze_repository_async(
                 processed_files, processing_metadata, repo_info, repo_url
             )
             
-            # Create output directory
+            # Create output directory structure
             base_output_dir = Path(output_dir)
             repo_output_dir = base_output_dir / f"{owner}_{repo}"
             FileUtils.ensure_directory(repo_output_dir)
@@ -785,7 +772,7 @@ async def analyze_repository_async(
             base_filename = f"{owner}_{repo}"
             output_paths = {}
             
-            # Save metadata files
+            # Save metadata files in JSON format
             meta_path = repo_output_dir / f"{base_filename}_meta.json"
             with open(meta_path, 'w', encoding='utf-8') as f:
                 json.dump(metadata, f, ensure_ascii=False, indent=2)
@@ -796,7 +783,7 @@ async def analyze_repository_async(
                 json.dump(compact_metadata, f, ensure_ascii=False, separators=(',', ':'))
             output_paths['compact_metadata'] = str(compact_meta_path)
             
-            # Create optimized code data structure
+            # Create optimized code data structure for AI processing
             code_data = {"f": {}}
             for file_info in processed_files:
                 path = file_info.get('path', '')
@@ -804,7 +791,7 @@ async def analyze_repository_async(
                 if path and content:
                     code_data["f"][path] = content
             
-            # Save based on output format
+            # Save based on output format preference
             if output_format in ["json", "both"]:
                 code_json_path = repo_output_dir / f"{base_filename}_code.json"
                 with open(code_json_path, 'w', encoding='utf-8') as f:
