@@ -11,7 +11,7 @@ import lzma
 import random
 import mimetypes
 from pathlib import Path
-from typing import Dict, Tuple, Union, Callable, Optional
+from typing import Dict, List, Union, Callable, Optional
 import tempfile
 import shutil
 from contextlib import contextmanager

@@ -1,13 +1,12 @@
 """
 Command Line Interface for py-github-analyzer v1.0.0
-High-performance async GitHub repository analyzer CLI
+High-performance async GitHub repository analyzer CLI with .env support
 """
 
 import os
 import sys
 import asyncio
 import argparse
-from pathlib import Path
 
 # Windows UTF-8 encoding setup
 if os.name == 'nt':
@@ -41,19 +40,21 @@ from .core import analyze_repository_async
 from .config import Config
 from .logger import set_verbose, get_logger
 from .exceptions import GitHubAnalyzerError, ValidationError
-from .utils import TokenUtils
 
 def create_argument_parser():
     """Create and configure argument parser"""
     parser = argparse.ArgumentParser(
         prog="py-github-analyzer",
-        description="High-performance async GitHub repository analyzer",
+        description="High-performance async GitHub repository analyzer with smart .env support",
         epilog="Example: py-github-analyzer https://github.com/user/repo --output ./results\n\n"
-               "GitHub Token Priority (highest to lowest):\n"
+               "🔑 GitHub Token Auto-Detection Priority:\n"
                "1. --github-token parameter\n" 
                "2. GITHUB_TOKEN environment variable\n"
                "3. GH_TOKEN environment variable\n"
-               "4. Anonymous access (rate limited)",
+               "4. .env file GITHUB_TOKEN (NEW!)\n"
+               "5. .env file GH_TOKEN (NEW!)\n"
+               "6. Anonymous access (rate limited)\n\n"
+               "💡 Create .env file with: GITHUB_TOKEN=your_token_here",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
@@ -77,7 +78,7 @@ def create_argument_parser():
     
     parser.add_argument(
         "-t", "--github-token",
-        help="GitHub personal access token (or set GITHUB_TOKEN/GH_TOKEN env var)"
+        help="GitHub personal access token (or set GITHUB_TOKEN env var or create .env file)"
     )
     
     parser.add_argument(
@@ -106,6 +107,12 @@ def create_argument_parser():
     )
     
     parser.add_argument(
+        "--check-env",
+        action="store_true",
+        help="Check .env file status and token sources"
+    )
+    
+    parser.add_argument(
         "--version",
         action="version",
         version=f"py-github-analyzer {Config.VERSION}"
@@ -118,9 +125,67 @@ def print_banner():
     print(f"""
 ╔══════════════════════════════════════════════════════════════════════════════╗
 ║                        py-github-analyzer v{Config.VERSION}                          ║
-║                   High-Performance Async GitHub Analyzer                    ║
+║           High-Performance Async GitHub Analyzer with .env Support          ║
 ╚══════════════════════════════════════════════════════════════════════════════╝
 """)
+
+def check_env_status():
+    """Check and display .env file status"""
+    try:
+        from .utils import TokenUtils
+        
+        print("🔍 Checking .env file status...")
+        
+        # Find .env files
+        env_files = TokenUtils._find_env_files()
+        if env_files:
+            print(f"📁 Found .env files:")
+            for env_file in env_files:
+                print(f"   • {env_file}")
+        else:
+            print("📁 No .env files found")
+        
+        # Load environment variables
+        env_vars = TokenUtils._load_env_variables()
+        
+        # Check token sources
+        print(f"\n🔑 Token source analysis:")
+        
+        # System environment variables
+        for env_var in ['GITHUB_TOKEN', 'GH_TOKEN']:
+            sys_token = os.environ.get(env_var)
+            env_token = env_vars.get(env_var)
+            
+            if sys_token:
+                print(f"   ✅ {env_var}: Found in system environment")
+            elif env_token:
+                print(f"   ✅ {env_var}: Found in .env file")
+            else:
+                print(f"   ❌ {env_var}: Not found")
+        
+        # Final token detection
+        final_token = TokenUtils.get_github_token()
+        token_info = TokenUtils.get_token_info(final_token)
+        
+        print(f"\n🎯 Final token status:")
+        if token_info['status'] == 'provided':
+            print(f"   ✅ Token detected: {token_info['masked']}")
+            print(f"   📍 Source: {token_info['source']}")
+            print(f"   🏷️  Type: {token_info['type']}")
+            print(f"   ✅ Valid format: {token_info['valid']}")
+            print(f"   📊 Rate limit: 5000 requests/hour")
+        else:
+            print(f"   ❌ No token detected")
+            print(f"   📊 Rate limit: 60 requests/hour (anonymous)")
+        
+        return True
+        
+    except ImportError:
+        print("❌ TokenUtils not available - .env support disabled")
+        return False
+    except Exception as e:
+        print(f"❌ Error checking .env status: {e}")
+        return False
 
 def print_analysis_info(args):
     """Print analysis configuration info"""
@@ -131,23 +196,43 @@ def print_analysis_info(args):
     logger.info(f"Analysis method: {args.method}")
     
     # Auto-detect token and show detailed info
-    active_token = TokenUtils.get_github_token(args.github_token)
-    token_info = TokenUtils.get_token_info(active_token)
-    
-    if token_info['status'] == 'provided':
-        source = "parameter" if args.github_token else "environment"
-        status_msg = f"{token_info['masked']} ({token_info['type']}, from {source})"
+    try:
+        from .utils import TokenUtils
+        active_token = TokenUtils.get_github_token(args.github_token)
+        token_info = TokenUtils.get_token_info(active_token)
         
-        if token_info['valid']:
-            logger.info(f"GitHub token: {status_msg}")
-            logger.info("Rate limit: 5000 requests/hour (authenticated)")
+        if token_info['status'] == 'provided':
+            source_info = f"({token_info['type']}, from {token_info['source']})"
+            
+            if token_info['valid']:
+                logger.info(f"GitHub token: {token_info['masked']} {source_info}")
+                logger.info("Rate limit: 5000 requests/hour (authenticated)")
+                
+                # Show helpful .env info for first-time users
+                if '.env' in token_info['source']:
+                    logger.info("💡 Token loaded from .env file - great choice for security!")
+                    
+            else:
+                logger.warning(f"GitHub token: {token_info['masked']} {source_info}")
+                logger.warning("Token format may be invalid - please check your token")
         else:
-            logger.warning(f"GitHub token: {status_msg}")
-            logger.warning("Token format may be invalid - please check your token")
-    else:
-        logger.info("GitHub token: Not provided (anonymous access)")
-        logger.warning("Rate limit: 60 requests/hour without token")
-        logger.info("To increase rate limit, set GITHUB_TOKEN environment variable")
+            logger.info("GitHub token: Not provided (anonymous access)")
+            logger.warning("Rate limit: 60 requests/hour without token")
+            
+            # Show helpful setup instructions
+            logger.info("💡 To increase rate limit and access private repos:")
+            logger.info("   Option 1 (Recommended): Create .env file with GITHUB_TOKEN=your_token")
+            logger.info("   Option 2: Set GITHUB_TOKEN environment variable")  
+            logger.info("   Option 3: Use --github-token parameter")
+            logger.info("   Get token at: https://github.com/settings/tokens")
+    
+    except ImportError:
+        # Fallback if TokenUtils not available
+        if args.github_token:
+            logger.info(f"GitHub token: Provided via parameter")
+        else:
+            logger.info("GitHub token: Not provided (anonymous access)")
+            logger.warning("Limited to 60 requests/hour without token")
     
     if args.dry_run:
         logger.info("Mode: Dry-run (simulation)")
@@ -163,7 +248,7 @@ def print_results_summary(result):
         files = result.get('files', [])
         
         print("\n" + "="*80)
-        print("ANALYSIS RESULTS")
+        print("📊 ANALYSIS RESULTS")
         print("="*80)
         
         logger.info(f"Repository: {metadata.get('repo', 'Unknown')}")
@@ -189,15 +274,16 @@ def print_results_summary(result):
         
         output_paths = result.get('output_paths', {})
         if output_paths:
-            print("\nOutput files:")
+            print("\n💾 Output files:")
             for output_type, path in output_paths.items():
                 if path:
-                    print(f"  {output_type}: {path}")
+                    print(f"   {output_type}: {path}")
         
         if result.get('fallback_mode'):
             print("\n⚠️  Analysis completed in fallback mode (limited information)")
             if 'error_message' in result:
                 logger.warning(f"Original error: {result['error_message']}")
+            logger.info("💡 Consider adding a GitHub token for full analysis")
         else:
             print("\n✅ Analysis completed successfully")
             
@@ -207,20 +293,40 @@ def print_results_summary(result):
             logger.error(f"Error: {result['error_message']}")
 
 def print_token_help():
-    """Print token setup help"""
+    """Print comprehensive token setup help"""
     print("\n" + "="*80)
-    print("GITHUB TOKEN SETUP")
+    print("🔑 GITHUB TOKEN SETUP GUIDE")
     print("="*80)
-    print("For private repositories or higher rate limits:")
+    
+    print("🎯 Recommended: Create .env file (safest & easiest)")
+    print("1. Create .env file in your project directory:")
+    print("   echo 'GITHUB_TOKEN=your_token_here' > .env")
+    print("2. Add .env to .gitignore to prevent accidental commits:")
+    print("   echo '.env' >> .gitignore")
+    print("3. Run analyzer - token will be auto-detected!")
+    
+    print("\n🌍 Alternative: Environment Variables")
+    if os.name == 'nt':  # Windows
+        print("   set GITHUB_TOKEN=your_token_here")
+        print("   # or PowerShell:")
+        print("   $env:GITHUB_TOKEN='your_token_here'")
+    else:  # Linux/macOS
+        print("   export GITHUB_TOKEN=your_token_here")
+    
+    print("\n⚡ Quick: Command Line Parameter")
+    print("   py-github-analyzer https://github.com/user/repo --github-token your_token")
+    
+    print("\n🔐 Creating a GitHub Token:")
     print("1. Visit: https://github.com/settings/tokens")
     print("2. Click 'Generate new token (classic)'")
     print("3. Select 'repo' scope for private repository access")
-    print("4. Copy the generated token")
-    print("5. Set environment variable:")
-    print("   export GITHUB_TOKEN=your_token_here")
-    print("   # or")
-    print("   export GH_TOKEN=your_token_here")
-    print("6. Or use --github-token parameter")
+    print("4. Copy the generated token (starts with ghp_ or github_pat_)")
+    
+    print("\n✅ Benefits of using tokens:")
+    print("• 5000 requests/hour vs 60 without token")
+    print("• Access to private repositories")
+    print("• Better rate limit management")
+    print("• Full repository analysis (no fallback mode)")
 
 async def async_main():
     """Main async entry point"""
@@ -230,17 +336,28 @@ async def async_main():
     if args.verbose:
         set_verbose(True)
     
+    # Handle --check-env flag
+    if args.check_env:
+        print_banner()
+        success = check_env_status()
+        return 0 if success else 1
+    
     logger = get_logger()
     
     try:
         print_banner()
         print_analysis_info(args)
         
-        # Check for token if accessing potentially private repo
-        active_token = TokenUtils.get_github_token(args.github_token)
-        if not active_token and ('private' in args.url.lower() or args.verbose):
-            print_token_help()
-            print()
+        # Check for token if accessing potentially private repo or on verbose mode
+        try:
+            from .utils import TokenUtils
+            active_token = TokenUtils.get_github_token(args.github_token)
+            
+            if not active_token and ('private' in args.url.lower() or args.verbose):
+                print_token_help()
+                print()
+        except ImportError:
+            pass
         
         result = await analyze_repository_async(
             repo_url=args.url,
