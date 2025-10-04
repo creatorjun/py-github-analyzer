@@ -1,9 +1,0 @@
-# Core HTTP and async support
-httpx>=0.24.0
-aiofiles>=0.8.0
-
-# Beautiful terminal output
-rich>=13.0.0
-
-# Legacy sync support for fallback
-requests>=2.28.0

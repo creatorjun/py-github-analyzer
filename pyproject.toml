@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py-github-analyzer"
-version = "1.3.5"
-description = "High-performance async GitHub repository analyzer with AI-optimized code extraction"
+version = "1.0.0"
+description = "High-performance async GitHub repository analyzer with AI-optimized code extraction and smart .env file support"
 authors = [
     {name = "Han Jun-hee", email = "createbrain2heart@gmail.com"}
 ]
 license = {text = "MIT"}
 readme = "README.md"
-keywords = ["github", "analyzer", "code", "repository", "ai", "async"]
+keywords = ["github", "analyzer", "code", "repository", "ai", "async", "dotenv", "env"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -23,25 +23,38 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Software Development :: Version Control :: Git",
     "Topic :: Text Processing :: General",
-    "Framework :: AsyncIO"
+    "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
+    "Framework :: AsyncIO",
+    "Environment :: Console"
 ]
 requires-python = ">=3.8"
 dependencies = [
     "httpx>=0.24.0",
-    "aiofiles>=0.8.0",
+    "aiofiles>=0.8.0", 
     "rich>=13.0.0",
-    "requests>=2.28.0"
+    "requests>=2.28.0",
+    "python-dotenv>=1.0.0"
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=6.0.0",
-    "pytest-asyncio>=0.18.0",
-    "black>=22.0.0",
-    "mypy>=0.910"
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-mock>=3.11.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.7.0",
+    "flake8>=6.0.0", 
+    "isort>=5.12.0",
+    "mypy>=1.5.0",
+    "types-requests>=2.31.0",
+    "bandit>=1.7.5",
+    "build>=0.10.0",
+    "twine>=4.0.2"
 ]
 
 [project.urls]
@@ -56,8 +69,7 @@ py-github-analyzer = "py_github_analyzer.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["py_github_analyzer*"]
-exclude = ["tests*"]
+exclude = ["tests*", "test_*"]
 
-[tool.black]
-line-length = 88
-target-version = ['py38']
+[tool.setuptools.package-data]
+py_github_analyzer = ["*.json", "*.txt"]

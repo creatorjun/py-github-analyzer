@@ -19,9 +19,32 @@ High-performance async GitHub repository analyzer with AI-optimized code extract
 - **🌍 Cross-platform compatibility** - Windows, macOS, and Linux support
 - **💡 Smart error handling** - Graceful fallback and comprehensive error messages
 
-## 📦 Installation
+## 🚀 Installation
 
+### From PyPI (Recommended)
 pip install py-github-analyzer
+
+text
+
+### For Development
+Clone the repository
+git clone https://github.com/creatorjun/py-github-analyzer.git
+cd py-github-analyzer
+
+Install in editable mode with dev dependencies
+pip install -e .[dev]
+
+text
+
+### Quick Start
+Basic installation
+pip install py-github-analyzer
+
+With all development tools
+pip install py-github-analyzer[dev]
+
+text
+undefined
 
 
 **All dependencies are automatically installed:**
@@ -29,7 +52,7 @@ pip install py-github-analyzer
 - `aiofiles` - Async file operations  
 - `rich` - Beautiful terminal output
 - `requests` - Fallback HTTP support
-- **Built-in .env support** - No additional dependencies needed!
+- `python-dotenv` - Secure .env file support
 
 ## 🔑 GitHub Token Setup (Recommended)
 
@@ -128,10 +151,7 @@ text
 
 import py_github_analyzer as pga
 
-Simple analysis (auto-detects token from .env file)
-result = pga.analyze_repository('https://github.com/user/repo')
-
-Async analysis (recommended for better performance)
+# Simple analysis (auto-detects token from .env file)
 result = await pga.analyze_repository_async('https://github.com/user/repo')
 
 With explicit GitHub token (overrides .env file)

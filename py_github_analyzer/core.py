@@ -100,13 +100,12 @@ class GitHubRepositoryAnalyzer:
                     'fallback_mode': False
                 }
             
-            # 🔧 올바른 메서드명 사용
             async with self.client:
                 if method == "zip" or (method == "auto" and not self.token):
-                    # ZIP 방식 사용
+                    # Using ZIP Download
                     files = await self.client.download_repository_zip(owner, repo)
                 else:
-                    # API 방식 사용 - 두 단계로 처리
+                    # Using API Download
                     file_tree = await self.client.get_repository_tree_api(owner, repo)
                     files = await self.client.download_files_concurrently(file_tree)
                     
@@ -118,7 +117,6 @@ class GitHubRepositoryAnalyzer:
                 else:
                     raise EmptyRepositoryError(f"No files found in repository {owner}/{repo}")
             
-            # 🔧 올바른 메서드명 사용
             processed_files = await self.file_processor.process_files_async(files)
             
             if not processed_files:

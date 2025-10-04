@@ -345,7 +345,6 @@ async def async_main():
         success = check_env_status()
         return 0 if success else 1
     
-    # URL 필수 검증 (--check-env가 아닐 때만)
     if not args.url:
         parser.error("URL is required unless using --check-env")
     
