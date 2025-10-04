@@ -100,12 +100,16 @@ class GitHubRepositoryAnalyzer:
                     'fallback_mode': False
                 }
             
-            # Get repository files
-            if method == "zip" or (method == "auto" and not self.token):
-                files = await self.client.get_files_from_zip(owner, repo)
-            else:
-                files = await self.client.get_files_from_api(owner, repo)
-                
+            # 🔧 올바른 메서드명 사용
+            async with self.client:
+                if method == "zip" or (method == "auto" and not self.token):
+                    # ZIP 방식 사용
+                    files = await self.client.download_repository_zip(owner, repo)
+                else:
+                    # API 방식 사용 - 두 단계로 처리
+                    file_tree = await self.client.get_repository_tree_api(owner, repo)
+                    files = await self.client.download_files_concurrently(file_tree)
+                    
             if not files:
                 self.logger.warning(f"⚠️  No files extracted from repository: {repo_url}")
                 if fallback:
@@ -114,7 +118,7 @@ class GitHubRepositoryAnalyzer:
                 else:
                     raise EmptyRepositoryError(f"No files found in repository {owner}/{repo}")
             
-            # Process files
+            # 🔧 올바른 메서드명 사용
             processed_files = await self.file_processor.process_files_async(files)
             
             if not processed_files:
@@ -180,7 +184,8 @@ class GitHubRepositoryAnalyzer:
         """Perform fallback analysis with basic repository information"""
         try:
             # Try to get basic repo info
-            repo_info = await self.client.get_repository_info(owner, repo)
+            async with self.client:
+                repo_info = await self.client.get_repository_info(owner, repo, safe_mode=True)
             
             metadata = {
                 'repo': f"{owner}/{repo}",
