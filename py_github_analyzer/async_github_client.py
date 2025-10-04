@@ -108,6 +108,21 @@ class AsyncRateLimitManager:
                 # If API call failed, don't consume rate limit calls
                 raise e
 
+    async def track_safe_api_call(self, response: 'httpx.Response'):
+        """
+        Track API calls made in safe mode (without full rate limit protection)
+        This helps maintain accurate rate limit tracking even for safe mode calls
+        """
+        try:
+            # Update rate limit info from response headers if available
+            if hasattr(response, 'headers') and response.headers:
+                await self.update_from_headers(dict(response.headers))
+                # Consume the call that was made
+                await self.consume_calls(1)
+        except Exception:
+            # If we can't track it precisely, at least consume one call
+            await self.consume_calls(1)
+
 
 class AsyncGitHubSession:
     """Async HTTP session for GitHub API using httpx"""
@@ -209,13 +224,16 @@ class AsyncGitHubClient:
             await self.session.close()
 
     async def get_repository_info(self, owner: str, repo: str, safe_mode: bool = False) -> Dict[str, Any]:
-        """Get basic repository information with safe mode option"""
+        """Get basic repository information with enhanced safe mode rate limit tracking"""
         url = URLParser.build_api_url(owner, repo, "")
         
         try:
             if safe_mode:
-                # Safe mode: don't use rate limit protection for basic info
+                # Safe mode: faster but still track rate limit usage
                 response = await self.session.get(url, raise_on_error=False)
+                
+                # Track the API call even in safe mode to maintain accurate rate limit info
+                await self.rate_limit_manager.track_safe_api_call(response)
                 
                 if not response.is_success:
                     return {

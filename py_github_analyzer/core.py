@@ -4,7 +4,7 @@
 
 GitHub Repository Analyzer Core Module
 
-High-performance async-first GitHub repository analysis
+High-performance async-first GitHub repository analysis with enhanced error reporting
 
 """
 
@@ -18,6 +18,7 @@ from .config import Config
 from .utils import URLParser, TokenUtils
 from .logger import get_logger, AnalyzerLogger
 from .exceptions import *
+from .exceptions import TimeoutError as AnalyzerTimeoutError
 from .async_github_client import AsyncGitHubClient
 from .metadata_generator import MetadataGenerator
 from .file_processor import FileProcessor
@@ -29,7 +30,7 @@ class EmptyRepositoryError(GitHubAnalyzerError):
 
 
 class GitHubRepositoryAnalyzer:
-    """High-performance async GitHub repository analyzer"""
+    """High-performance async GitHub repository analyzer with enhanced error handling"""
 
     def __init__(self, token: Optional[str] = None, logger: Optional[AnalyzerLogger] = None):
         """Initialize analyzer with optional token and logger"""
@@ -63,7 +64,7 @@ class GitHubRepositoryAnalyzer:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Analyze a GitHub repository asynchronously with ZIP-first strategy
+        Analyze a GitHub repository asynchronously with ZIP-first strategy and comprehensive error handling
         
         Args:
             repo_url: GitHub repository URL
@@ -75,8 +76,11 @@ class GitHubRepositoryAnalyzer:
             fallback: Enable fallback mode on errors
         
         Returns:
-            Dict containing analysis results
+            Dict containing analysis results with detailed error information
         """
+        original_error = None
+        fallback_error = None
+        
         try:
             url_info = URLParser.parse_github_url(repo_url)
             owner = url_info['owner']
@@ -219,27 +223,116 @@ class GitHubRepositoryAnalyzer:
                 'metadata': metadata,
                 'files': processed_files,
                 'output_paths': output_paths,
-                'fallback_mode': False
+                'fallback_mode': False,
+                'analysis_method': method,
+                'token_used': bool(self.token)
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Unexpected error during async processing: {e}")
+            # Store the original error for comprehensive reporting
+            original_error = e
+            self.logger.error(f"❌ Analysis failed with error: {type(e).__name__}: {e}")
+            
             if fallback:
                 self.logger.warning("⚠️ Attempting fallback analysis...")
                 try:
                     url_info = URLParser.parse_github_url(repo_url)
-                    return await self._fallback_analysis(url_info['owner'], url_info['repo'], output_dir, output_format)
-                except Exception as fallback_error:
-                    self.logger.error(f"❌ Fallback analysis also failed: {fallback_error}")
+                    fallback_result = await self._fallback_analysis(
+                        url_info['owner'], url_info['repo'], output_dir, output_format,
+                        original_error_info={
+                            'error_type': type(e).__name__,
+                            'error_message': str(e),
+                            'analysis_method': method
+                        }
+                    )
                     
-            return {
-                'success': False,
-                'error_message': str(e),
-                'repository': repo_url,
-                'fallback_mode': fallback
-            }
+                    if fallback_result.get('success'):
+                        # Fallback succeeded - include original error info for context
+                        fallback_result['original_error'] = {
+                            'type': type(original_error).__name__,
+                            'message': str(original_error),
+                            'fallback_triggered': True
+                        }
+                        return fallback_result
+                    else:
+                        # Fallback also failed - this info is already in fallback_result
+                        return fallback_result
+                        
+                except Exception as fallback_ex:
+                    # Store fallback error for comprehensive reporting
+                    fallback_error = fallback_ex
+                    self.logger.error(f"❌ Fallback analysis also failed: {type(fallback_ex).__name__}: {fallback_ex}")
+                    
+                    # Create comprehensive error message with both failures
+                    comprehensive_error = self._create_comprehensive_error_message(original_error, fallback_error)
+                    
+                    return {
+                        'success': False,
+                        'error_message': comprehensive_error,
+                        'original_error': {
+                            'type': type(original_error).__name__,
+                            'message': str(original_error)
+                        },
+                        'fallback_error': {
+                            'type': type(fallback_error).__name__,
+                            'message': str(fallback_error)
+                        },
+                        'repository': repo_url,
+                        'fallback_mode': True,
+                        'analysis_method': method,
+                        'token_available': bool(self.token),
+                        'error_context': {
+                            'both_attempts_failed': True,
+                            'fallback_attempted': True
+                        }
+                    }
+            else:
+                # No fallback attempted
+                return {
+                    'success': False,
+                    'error_message': f"Analysis failed: {type(original_error).__name__}: {original_error}",
+                    'error_type': type(original_error).__name__,
+                    'repository': repo_url,
+                    'fallback_mode': False,
+                    'analysis_method': method,
+                    'token_available': bool(self.token),
+                    'error_context': {
+                        'fallback_attempted': False
+                    }
+                }
 
-    async def _fallback_analysis(self, owner: str, repo: str, output_dir: str, output_format: str) -> Dict[str, Any]:
+    def _create_comprehensive_error_message(self, original_error: Exception, fallback_error: Exception) -> str:
+        """Create a comprehensive error message that includes both original and fallback failures"""
+        original_type = type(original_error).__name__
+        fallback_type = type(fallback_error).__name__
+        
+        # Create detailed error message
+        comprehensive_message = (
+            f"Repository analysis failed completely. "
+            f"Primary analysis failed with {original_type}: {original_error}. "
+            f"Fallback analysis also failed with {fallback_type}: {fallback_error}."
+        )
+        
+        # Add helpful context based on error types
+        if isinstance(original_error, (PrivateRepositoryError, AuthenticationError)):
+            if not self.token:
+                comprehensive_message += " Consider providing a GitHub token for private repository access."
+            else:
+                comprehensive_message += " Verify that your GitHub token has sufficient permissions (repo scope)."
+                
+        elif isinstance(original_error, (NetworkError, AnalyzerTimeoutError)):
+            comprehensive_message += " This appears to be a network connectivity issue. Please check your internet connection and try again."
+            
+        elif isinstance(original_error, RateLimitExceededError):
+            comprehensive_message += " GitHub API rate limit exceeded. Please wait before retrying or use a different token."
+            
+        elif isinstance(original_error, RepositoryTooLargeError):
+            comprehensive_message += " Repository is too large for analysis. Consider analyzing a smaller repository or increasing size limits."
+            
+        return comprehensive_message
+
+    async def _fallback_analysis(self, owner: str, repo: str, output_dir: str, output_format: str, 
+                                original_error_info: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Provide basic fallback analysis when normal processing fails"""
         try:
             # Try to get basic repository info
@@ -261,6 +354,10 @@ class GitHubRepositoryAnalyzer:
                 'analysis_mode': 'basic_metadata_only'
             }
 
+            # Include original error info if provided
+            if original_error_info:
+                fallback_metadata['original_failure'] = original_error_info
+
             output_paths = await self._save_output_async(
                 output_dir, output_format, fallback_metadata, [], f'{owner}_{repo}_fallback'
             )
@@ -272,17 +369,40 @@ class GitHubRepositoryAnalyzer:
                 'metadata': fallback_metadata,
                 'files': [],
                 'output_paths': output_paths,
-                'fallback_mode': True
+                'fallback_mode': True,
+                'analysis_method': 'fallback',
+                'original_error': original_error_info,
+                'warning': 'Analysis completed in fallback mode with limited repository information only'
             }
 
         except Exception as e:
-            self.logger.error(f"❌ Fallback analysis failed: {e}")
-            return {
+            fallback_error_message = f"Fallback analysis failed: {type(e).__name__}: {e}"
+            self.logger.error(f"❌ {fallback_error_message}")
+            
+            # Create detailed fallback failure response
+            error_details = {
                 'success': False,
-                'error_message': f"Fallback analysis failed: {e}",
+                'error_message': fallback_error_message,
+                'fallback_error': {
+                    'type': type(e).__name__,
+                    'message': str(e)
+                },
                 'repository': f'{owner}/{repo}',
-                'fallback_mode': True
+                'fallback_mode': True,
+                'analysis_method': 'fallback_failed'
             }
+            
+            # Include original error info if available
+            if original_error_info:
+                error_details['original_error'] = original_error_info
+                comprehensive_msg = (
+                    f"Complete analysis failure. "
+                    f"Original error: {original_error_info.get('error_type', 'Unknown')}: {original_error_info.get('error_message', 'Unknown')}. "
+                    f"Fallback error: {type(e).__name__}: {e}"
+                )
+                error_details['error_message'] = comprehensive_msg
+                
+            return error_details
 
     async def _save_output_async(
         self,
@@ -292,40 +412,64 @@ class GitHubRepositoryAnalyzer:
         files: List[Dict[str, Any]],
         filename_prefix: str
     ) -> Dict[str, str]:
-        """Save analysis results asynchronously"""
-        output_dir_path = Path(output_dir)
-        output_dir_path.mkdir(parents=True, exist_ok=True)
-        
-        output_paths = {}
-
-        if output_format in ['json', 'both']:
-            json_path = output_dir_path / f"{filename_prefix}.json"
-            output_data = {
-                'metadata': metadata,
-                'files': files
-            }
+        """Save analysis results asynchronously with enhanced error handling"""
+        try:
+            output_dir_path = Path(output_dir)
+            output_dir_path.mkdir(parents=True, exist_ok=True)
             
-            async with aiofiles.open(json_path, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(output_data, indent=2, ensure_ascii=False))
-            output_paths['json'] = str(json_path)
+            output_paths = {}
 
-        if output_format in ['bin', 'both']:
-            bin_path = output_dir_path / f"{filename_prefix}.bin"
-            output_data = {
-                'metadata': metadata,
-                'files': files
-            }
+            if output_format in ['json', 'both']:
+                json_path = output_dir_path / f"{filename_prefix}.json"
+                output_data = {
+                    'metadata': metadata,
+                    'files': files,
+                    'generated_at': asyncio.get_event_loop().time(),
+                    'version': Config.VERSION
+                }
+                
+                async with aiofiles.open(json_path, 'w', encoding='utf-8') as f:
+                    await f.write(json.dumps(output_data, indent=2, ensure_ascii=False))
+                output_paths['json'] = str(json_path)
+                self.logger.debug(f"Saved JSON output: {json_path}")
+
+            if output_format in ['bin', 'both']:
+                bin_path = output_dir_path / f"{filename_prefix}.bin"
+                output_data = {
+                    'metadata': metadata,
+                    'files': files,
+                    'generated_at': asyncio.get_event_loop().time(),
+                    'version': Config.VERSION
+                }
+                
+                async with aiofiles.open(bin_path, 'wb') as f:
+                    import pickle
+                    await f.write(pickle.dumps(output_data))
+                output_paths['bin'] = str(bin_path)
+                self.logger.debug(f"Saved binary output: {bin_path}")
+
+            return output_paths
             
-            async with aiofiles.open(bin_path, 'wb') as f:
-                import pickle
-                await f.write(pickle.dumps(output_data))
-            output_paths['bin'] = str(bin_path)
-
-        return output_paths
+        except Exception as e:
+            self.logger.error(f"❌ Failed to save output files: {e}")
+            return {'error': f"Output save failed: {e}"}
 
 
 # Standalone async function for repository analysis
 async def analyze_repository_async(repo_url: str, **kwargs) -> Dict[str, Any]:
-    """Standalone async function for repository analysis"""
-    analyzer = GitHubRepositoryAnalyzer()
+    """
+    Standalone async function for repository analysis with enhanced error reporting
+    
+    Args:
+        repo_url: GitHub repository URL
+        **kwargs: Additional arguments passed to GitHubRepositoryAnalyzer
+        
+    Returns:
+        Dict: Analysis results with comprehensive error information
+    """
+    analyzer = GitHubRepositoryAnalyzer(
+        token=kwargs.get('github_token'),
+        logger=kwargs.get('logger')
+    )
+    
     return await analyzer.analyze_repository_async(repo_url, **kwargs)
