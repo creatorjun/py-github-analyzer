@@ -7,7 +7,6 @@ import os
 import sys
 import asyncio
 import argparse
-from pathlib import Path
 
 # Windows UTF-8 encoding setup
 if os.name == 'nt':

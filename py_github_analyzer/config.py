@@ -7,7 +7,6 @@ Central configuration and constants
 """
 
 from pathlib import Path
-from typing import Dict, List, Set
 
 class Config:
     """Central configuration class"""

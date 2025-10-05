@@ -5,7 +5,7 @@ Enhanced logging with Rich formatting and progress tracking
 
 import os
 import sys
-from typing import Optional, Dict, Any, Union
+from typing import Optional, Dict, Any
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.table import Table

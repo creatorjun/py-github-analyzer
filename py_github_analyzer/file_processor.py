@@ -4,9 +4,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Set
 from collections import defaultdict
-import hashlib
 
-from .utils import TokenUtils, ValidationUtils
 from .config import Config
 from .logger import AnalyzerLogger
 

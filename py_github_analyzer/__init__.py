@@ -4,14 +4,12 @@ py-github-analyzer: High-performance async GitHub repository analyzer
 with AI-optimized code extraction and smart .env file support
 """
 
-import asyncio
-from typing import Dict, Any, List, Optional, Union
-from pathlib import Path
+from typing import Dict, Any
 
 try:
     from .core import GitHubRepositoryAnalyzer, analyze_repository_async, EmptyRepositoryError
     from .async_github_client import AsyncGitHubClient
-    from .logger import get_logger, AnalyzerLogger
+    from .logger import get_logger
     from .utils import URLParser, TokenUtils
     from .config import Config
     from .exceptions import *
