@@ -9,6 +9,7 @@ High-performance async-first GitHub repository analysis with enhanced error repo
 """
 
 import asyncio
+import os
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -33,30 +34,58 @@ class EmptyRepositoryError(GitHubAnalyzerError):
 
 class GitHubRepositoryAnalyzer:
     """High-performance async GitHub repository analyzer with enhanced error handling"""
-
-    def __init__(
-        self, token: Optional[str] = None, logger: Optional[AnalyzerLogger] = None
-    ):
+    
+    def __init__(self, token: Optional[str] = None, logger: Optional[AnalyzerLogger] = None):
         """Initialize analyzer with optional token and logger"""
-        self.token = TokenUtils.get_github_token(token) if TokenUtils else token
+        # 🔧 이 부분을 다음과 같이 수정:
+        self._github_token = self._resolve_github_token(token)
         self.logger = logger or get_logger()
-        self.client = AsyncGitHubClient(self.token, self.logger)
+        
+        # Initialize components
+        self.client = AsyncGitHubClient(self._github_token, self.logger)
         self.metadata_generator = MetadataGenerator()
         self.file_processor = FileProcessor(self.logger)
+        
+        # 토큰 정보 로깅
+        self._log_initialization_info()
 
-        if self.token:
+    def _resolve_github_token(self, provided_token: Optional[str]) -> Optional[str]:
+        """Resolve GitHub token from multiple sources"""
+        try:
+            from .utils import TokenUtils
+            return TokenUtils.get_github_token(provided_token)
+        except ImportError:
+            # Fallback if TokenUtils is not available
+            if provided_token:
+                return provided_token
+            import os
+            return os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN')
+
+    def _log_initialization_info(self):
+        """Log initialization information"""
+        if self._github_token:
             try:
-                token_info = TokenUtils.get_token_info(self.token) if TokenUtils else {}
-                if token_info:
-                    self.logger.info(
-                        f"ℹ️ GitHub token loaded: {token_info.get('masked', 'provided')} ({token_info.get('type', 'unknown')})"
-                    )
+                from .utils import TokenUtils
+                token_info = TokenUtils.get_token_info(self._github_token)
+                if token_info['status'] == 'provided':
+                    self.logger.info(f"🔑 GitHub token loaded: {token_info['masked']} ({token_info['type']})")
                 else:
-                    self.logger.info(f"ℹ️ GitHub token loaded: provided")
-            except Exception:
-                self.logger.info(f"ℹ️ GitHub token loaded: provided")
+                    self.logger.info("🔑 GitHub token loaded: provided")
+            except (ImportError, Exception):
+                self.logger.info("🔑 GitHub token: provided")
+            self.logger.info("⚡ Rate limit: 5000 requests/hour")
         else:
-            self.logger.warning("⚠️ No GitHub token - rate limited to 60 requests/hour")
+            self.logger.warning("⚠️  No GitHub token - rate limited to 60 requests/hour")
+
+    @property
+    def github_token(self) -> Optional[str]:
+        """Get the current GitHub token"""
+        return self._github_token
+
+    @property 
+    def token(self) -> Optional[str]:
+        """Backward compatibility property"""
+        return self._github_token
 
     async def analyze_repository_async(
         self,

@@ -70,7 +70,7 @@ class URLParser:
         return {
             'owner': result['owner'],
             'repo': result['repo'],
-            'path': result.get('path', ''),
+            'path': result.get('path') or '',  # Always string, never None
             'full_name': f"{result['owner']}/{result['repo']}"
         }
 
@@ -108,32 +108,40 @@ class ValidationUtils:
     @staticmethod
     def validate_github_token(token: Optional[str]) -> bool:
         """Validate GitHub token format"""
+        if not token or not isinstance(token, str):
+            return False
+
+        token = token.strip()
         if not token:
             return False
 
-        # GitHub personal access tokens (classic)
-        if token.startswith('ghp_') and len(token) == 40:
-            return True
+        # GitHub personal access tokens (classic) - exactly 40 chars starting with ghp_
+        if token.startswith('ghp_'):
+            return len(token) == 40
 
-        # GitHub App tokens
-        if token.startswith('ghs_') and len(token) == 40:
-            return True
+        # GitHub App tokens - exactly 40 chars starting with ghs_
+        if token.startswith('ghs_'):
+            return len(token) == 40
 
-        # GitHub OAuth tokens
-        if token.startswith('gho_') and len(token) == 40:
-            return True
+        # GitHub OAuth tokens - exactly 40 chars starting with gho_
+        if token.startswith('gho_'):
+            return len(token) == 40
 
-        # GitHub refresh tokens
-        if token.startswith('ghr_') and len(token) == 40:
-            return True
+        # GitHub refresh tokens - exactly 40 chars starting with ghr_
+        if token.startswith('ghr_'):
+            return len(token) == 40
 
-        # Fine-grained personal access tokens
-        if token.startswith('github_pat_') and len(token) > 80:
-            return True
+        # Fine-grained personal access tokens - starts with github_pat_ and longer than 80 chars
+        if token.startswith('github_pat_'):
+            return len(token) >= 80
 
-        # Legacy tokens (40 characters, hex)
-        if len(token) == 40 and all(c in '0123456789abcdef' for c in token.lower()):
-            return True
+        # Legacy tokens (40 characters, hexadecimal)
+        if len(token) == 40:
+            try:
+                int(token, 16)  # Check if it's valid hexadecimal
+                return True
+            except ValueError:
+                return False
 
         return False
 
@@ -156,7 +164,7 @@ class ValidationUtils:
             return False
         
         # Check for backslashes (Windows path separators)
-        if '\\' in file_path:
+        if '\\' in file_path:  # Fixed: single backslash check
             return False
         
         # Check for relative path indicators
@@ -627,35 +635,8 @@ class TokenUtils:
 
     @staticmethod
     def validate_token_format(token: Optional[str]) -> bool:
-        """Validate GitHub token format"""
-        if not token:
-            return False
-
-        # GitHub personal access tokens (classic)
-        if token.startswith('ghp_') and len(token) == 40:
-            return True
-
-        # GitHub App tokens
-        if token.startswith('ghs_') and len(token) == 40:
-            return True
-
-        # GitHub OAuth tokens
-        if token.startswith('gho_') and len(token) == 40:
-            return True
-
-        # GitHub refresh tokens
-        if token.startswith('ghr_') and len(token) == 40:
-            return True
-
-        # Fine-grained personal access tokens
-        if token.startswith('github_pat_') and len(token) > 80:
-            return True
-
-        # Legacy tokens (40 characters, hex)
-        if len(token) == 40 and all(c in '0123456789abcdef' for c in token.lower()):
-            return True
-
-        return False
+        """Validate GitHub token format (uses ValidationUtils method)"""
+        return ValidationUtils.validate_github_token(token)
 
     @staticmethod
     def get_token_info(token: Optional[str]) -> Dict[str, Union[str, bool]]:
