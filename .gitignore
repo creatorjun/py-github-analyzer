@@ -432,8 +432,7 @@ temp/
 !.env.template
 
 # Keep test fixtures
-!tests/fixtures/
-!tests/data/
+!tests
 
 # ===================================================================
 # END OF .gitignore
