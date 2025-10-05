@@ -3,25 +3,32 @@ Logger module for py-github-analyzer
 Enhanced logging with Rich formatting and progress tracking
 """
 
+import logging
 import os
 import sys
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 from rich.console import Console
 from rich.logging import RichHandler
-from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeRemainingColumn
 from rich.panel import Panel
-import logging
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
+from rich.table import Table
 
 # Windows UTF-8 environment setup
-if os.name == 'nt':  # Windows
-    os.environ['PYTHONIOENCODING'] = 'utf-8'
-    os.environ['PYTHONLEGACYWINDOWSFSENCODING'] = '0'
+if os.name == "nt":  # Windows
+    os.environ["PYTHONIOENCODING"] = "utf-8"
+    os.environ["PYTHONLEGACYWINDOWSFSENCODING"] = "0"
 
 # Force console to UTF-8 encoding
 try:
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 except AttributeError:
     # reconfigure method doesn't exist in Python 3.7
     pass
@@ -32,19 +39,19 @@ except Exception:
 
 class AnalyzerLogger:
     """Enhanced logger with Rich formatting and progress tracking"""
-    
+
     def __init__(self, verbose: bool = False):
         self.verbose = verbose
-        
+
         # Windows compatible Console setup
         console_kwargs = {
             "width": 100,
             "force_terminal": True,
             "no_color": False,
             "tab_size": 4,
-            "stderr": False  # Use stdout
+            "stderr": False,  # Use stdout
         }
-        
+
         try:
             self.console = Console(**console_kwargs)
         except Exception:
@@ -53,7 +60,7 @@ class AnalyzerLogger:
 
         # Setup Python logger with Rich handler
         self._setup_python_logger()
-        
+
         # Progress tracking
         self._current_progress = None
         self._progress_tasks = {}
@@ -61,16 +68,16 @@ class AnalyzerLogger:
     def _setup_python_logger(self):
         """Setup underlying Python logger with Rich formatting"""
         # Create or get logger for py-github-analyzer
-        self.logger = logging.getLogger('py-github-analyzer')
-        
+        self.logger = logging.getLogger("py-github-analyzer")
+
         # Remove existing handlers to avoid duplicates
         for handler in self.logger.handlers[:]:
             self.logger.removeHandler(handler)
-        
+
         # Set logging level
         level = logging.DEBUG if self.verbose else logging.INFO
         self.logger.setLevel(level)
-        
+
         try:
             # Rich handler with custom formatting
             rich_handler = RichHandler(
@@ -80,23 +87,22 @@ class AnalyzerLogger:
                 rich_tracebacks=True,
                 tracebacks_show_locals=self.verbose,
                 markup=True,
-                show_level=True
+                show_level=True,
             )
-            
+
             # Format for log messages
-            formatter = logging.Formatter(
-                fmt='%(message)s',
-                datefmt='%H:%M:%S'
-            )
+            formatter = logging.Formatter(fmt="%(message)s", datefmt="%H:%M:%S")
             rich_handler.setFormatter(formatter)
-            
+
             self.logger.addHandler(rich_handler)
-            
+
         except Exception:
             # Fallback to basic logging if Rich handler fails
             basic_handler = logging.StreamHandler()
             basic_handler.setFormatter(
-                logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+                logging.Formatter(
+                    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+                )
             )
             self.logger.addHandler(basic_handler)
 
@@ -125,7 +131,7 @@ class AnalyzerLogger:
         """Log critical message"""
         self.logger.critical(f"[bold red]🚨 {message}[/bold red]", **kwargs)
 
-    def progress_start(self, description: str = "Processing...") -> 'Progress':
+    def progress_start(self, description: str = "Processing...") -> "Progress":
         """Start progress tracking"""
         try:
             self._current_progress = Progress(
@@ -135,7 +141,7 @@ class AnalyzerLogger:
                 TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
                 TimeRemainingColumn(),
                 console=self.console,
-                transient=True
+                transient=True,
             )
             self._current_progress.start()
             return self._current_progress
@@ -173,7 +179,9 @@ class AnalyzerLogger:
                 self._current_progress = None
                 self._progress_tasks = {}
 
-    def print_summary_table(self, data: Dict[str, Any], title: str = "Analysis Results"):
+    def print_summary_table(
+        self, data: Dict[str, Any], title: str = "Analysis Results"
+    ):
         """Print formatted summary table"""
         try:
             table = Table(title=title, show_header=True, header_style="bold blue")
@@ -190,8 +198,8 @@ class AnalyzerLogger:
                     formatted_value = str(value)
                 else:
                     formatted_value = str(value)[:50]  # Truncate long strings
-                
-                table.add_row(key.replace('_', ' ').title(), formatted_value)
+
+                table.add_row(key.replace("_", " ").title(), formatted_value)
 
             self.console.print(table)
         except Exception:
@@ -222,18 +230,20 @@ class AnalyzerLogger:
             self.console.print(f"\n[bold]{title} ({len(files)} total):[/bold]")
             for i, file_info in enumerate(files[:20]):  # Show first 20
                 if isinstance(file_info, dict):
-                    name = file_info.get('name', 'Unknown')
-                    size = file_info.get('size', 0)
+                    name = file_info.get("name", "Unknown")
+                    size = file_info.get("size", 0)
                     size_str = f"({size} bytes)" if size > 0 else ""
                 else:
                     name = str(file_info)
                     size_str = ""
-                
-                self.console.print(f"  {i+1:2d}. [cyan]{name}[/cyan] [dim]{size_str}[/dim]")
-            
+
+                self.console.print(
+                    f"  {i+1:2d}. [cyan]{name}[/cyan] [dim]{size_str}[/dim]"
+                )
+
             if len(files) > 20:
                 self.console.print(f"  ... and {len(files) - 20} more files")
-                
+
         except Exception:
             # Fallback to simple list
             self.info(f"{title} ({len(files)} total):")
@@ -254,7 +264,9 @@ class AnalyzerLogger:
         """Log download progress"""
         if total > 0:
             percent = (downloaded / total) * 100
-            self.debug(f"Downloading {filename}: {percent:.1f}% ({downloaded}/{total} bytes)")
+            self.debug(
+                f"Downloading {filename}: {percent:.1f}% ({downloaded}/{total} bytes)"
+            )
         else:
             self.debug(f"Downloading {filename}: {downloaded} bytes")
 
@@ -273,13 +285,13 @@ _verbose_mode: bool = False
 def get_logger(verbose: bool = None) -> AnalyzerLogger:
     """Get or create global logger instance"""
     global _global_logger, _verbose_mode
-    
+
     if verbose is not None:
         _verbose_mode = verbose
-    
+
     if _global_logger is None or (_global_logger.verbose != _verbose_mode):
         _global_logger = AnalyzerLogger(_verbose_mode)
-    
+
     return _global_logger
 
 
@@ -287,13 +299,13 @@ def set_verbose(verbose: bool):
     """Set global verbose mode"""
     global _verbose_mode, _global_logger
     _verbose_mode = verbose
-    
+
     # Force recreation of logger with new verbose setting
     if _global_logger is not None:
         _global_logger = AnalyzerLogger(verbose)
 
 
-def get_progress() -> Optional['Progress']:
+def get_progress() -> Optional["Progress"]:
     """Get current progress tracker"""
     logger = get_logger()
     return logger._current_progress
@@ -302,14 +314,15 @@ def get_progress() -> Optional['Progress']:
 def log_exception(exception: Exception, context: str = ""):
     """Log exception with context"""
     logger = get_logger()
-    
+
     if context:
         logger.error(f"Error in {context}: {exception}")
     else:
         logger.error(f"Error: {exception}")
-    
+
     if logger.verbose:
         import traceback
+
         logger.debug("Full traceback:")
         logger.debug(traceback.format_exc())
 
@@ -319,21 +332,26 @@ def debug(message: str, **kwargs):
     """Log debug message"""
     get_logger().debug(message, **kwargs)
 
+
 def info(message: str, **kwargs):
     """Log info message"""
     get_logger().info(message, **kwargs)
+
 
 def success(message: str, **kwargs):
     """Log success message"""
     get_logger().success(message, **kwargs)
 
+
 def warning(message: str, **kwargs):
     """Log warning message"""
     get_logger().warning(message, **kwargs)
 
+
 def error(message: str, **kwargs):
     """Log error message"""
     get_logger().error(message, **kwargs)
+
 
 def critical(message: str, **kwargs):
     """Log critical message"""
