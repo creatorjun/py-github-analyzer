@@ -1,6 +1,9 @@
 """
+
 Unit tests for Core Module
+
 Based on ACTUAL GitHubRepositoryAnalyzer behavior - FULLY CORRECTED VERSION
+
 """
 
 import pytest
@@ -20,24 +23,34 @@ from py_github_analyzer.exceptions import (
 class TestGitHubRepositoryAnalyzer:
     """Test GitHubRepositoryAnalyzer main functionality"""
 
+    @pytest.fixture(autouse=True)
+    def mock_cli_async_operations(self):
+        """Prevent async_main coroutine creation in all tests - ROOT CAUSE SOLUTION"""
+        with patch('py_github_analyzer.cli.asyncio.run', return_value=0), \
+             patch('py_github_analyzer.cli.async_main', return_value=0):
+            yield
+
     def test_analyzer_initialization_with_token(self, test_token, mock_logger):
-        """Test analyzer initialization with token"""
+        """Test analyzer initialization with token - FIXED ASYNC WARNING"""
+        # CORRECTED: Mock TokenUtils to avoid async call in sync context
         with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=test_token):
             analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
             assert analyzer.token == test_token
             assert analyzer.logger == mock_logger
 
     def test_analyzer_initialization_without_token(self, mock_logger):
-        """Test analyzer initialization without token"""
+        """Test analyzer initialization without token - FIXED ASYNC WARNING"""
+        # CORRECTED: Mock TokenUtils to return None and avoid async call
         with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=None):
             analyzer = GitHubRepositoryAnalyzer(logger=mock_logger)
             assert analyzer.logger == mock_logger
 
     def test_analyzer_initialization_with_environment_token(self, mock_logger):
-        """Test analyzer gets token from environment"""
-        with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value='env_token'):
+        """Test analyzer gets token from environment - FIXED ASYNC WARNING"""
+        # CORRECTED: Mock TokenUtils to return env token and avoid async call
+        with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value="env_token"):
             analyzer = GitHubRepositoryAnalyzer(logger=mock_logger)
-            assert analyzer.token == 'env_token'
+            assert analyzer.token == "env_token"
 
     @pytest.mark.asyncio
     async def test_analyze_repository_async_success(self, test_token, mock_logger):
@@ -75,6 +88,13 @@ class TestGitHubRepositoryAnalyzer:
 class TestStandaloneFunction:
     """Test standalone analyze_repository_async function"""
 
+    @pytest.fixture(autouse=True)
+    def mock_cli_async_operations(self):
+        """Prevent async_main coroutine creation in all tests - ROOT CAUSE SOLUTION"""
+        with patch('py_github_analyzer.cli.asyncio.run', return_value=0), \
+             patch('py_github_analyzer.cli.async_main', return_value=0):
+            yield
+
     @pytest.mark.asyncio
     async def test_analyze_repository_async_function_with_token(self, test_token):
         """Test standalone function with token"""
@@ -90,7 +110,6 @@ class TestStandaloneFunction:
     async def test_analyze_repository_async_function_without_token(self):
         """Test standalone function without token"""
         result = await analyze_repository_async('https://github.com/test/repo')
-        
         assert isinstance(result, dict)
         assert 'metadata' in result
 
@@ -98,7 +117,6 @@ class TestStandaloneFunction:
     async def test_analyze_repository_async_function_with_output_file(self, test_token, temp_directory):
         """Test standalone function with output file"""
         output_path = str(temp_directory / 'output.json')
-        
         result = await analyze_repository_async(
             'https://github.com/test/repo',
             github_token=test_token,
@@ -124,6 +142,13 @@ class TestStandaloneFunction:
 class TestCoreIntegration:
     """Integration tests for core functionality"""
 
+    @pytest.fixture(autouse=True)
+    def mock_cli_async_operations(self):
+        """Prevent async_main coroutine creation in all tests - ROOT CAUSE SOLUTION"""
+        with patch('py_github_analyzer.cli.asyncio.run', return_value=0), \
+             patch('py_github_analyzer.cli.async_main', return_value=0):
+            yield
+
     @pytest.mark.asyncio
     async def test_full_analysis_pipeline_mocked(self, test_token, mock_logger):
         """Test complete analysis pipeline"""
@@ -146,7 +171,6 @@ class TestCoreIntegration:
             
             # Should return result instead of raising
             result = await analyzer.analyze_repository_async('https://github.com/invalid/repo')
-            
             assert isinstance(result, dict)
             assert 'metadata' in result
 
@@ -154,6 +178,13 @@ class TestCoreIntegration:
 @pytest.mark.unit
 class TestGitHubRepositoryAnalyzerAdvanced:
     """Advanced test cases with CORRECTED implementations"""
+
+    @pytest.fixture(autouse=True)
+    def mock_cli_async_operations(self):
+        """Prevent async_main coroutine creation in all tests - ROOT CAUSE SOLUTION"""
+        with patch('py_github_analyzer.cli.asyncio.run', return_value=0), \
+             patch('py_github_analyzer.cli.async_main', return_value=0):
+            yield
 
     @pytest.mark.asyncio
     async def test_zip_to_api_fallback_strategy(self, test_token, mock_logger):
@@ -240,41 +271,43 @@ class TestGitHubRepositoryAnalyzerAdvanced:
 
     def test_comprehensive_error_message_creation(self, test_token, mock_logger):
         """Test comprehensive error message creation - CORRECTED METHOD NAME"""
-        analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
-        
-        original_error = PrivateRepositoryError("Private repo", "url")
-        fallback_error = NetworkError("Network failed")
-        
-        # Use ACTUAL private method name with underscore
-        message = analyzer._create_comprehensive_error_message(original_error, fallback_error)
-        
-        assert "PrivateRepositoryError" in message
-        assert "NetworkError" in message
-        assert "completely" in message
+        with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=test_token):
+            analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
+            
+            original_error = PrivateRepositoryError("Private repo", "url")
+            fallback_error = NetworkError("Network failed")
+            
+            # Use ACTUAL private method name with underscore
+            message = analyzer._create_comprehensive_error_message(original_error, fallback_error)
+            
+            assert "PrivateRepositoryError" in message
+            assert "NetworkError" in message
+            assert "completely" in message
 
     @pytest.mark.asyncio
     async def test_save_output_formats(self, test_token, mock_logger, temp_directory):
         """Test different output format saving - CORRECTED METHOD NAME"""
-        analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
-        
-        metadata = {'test': 'data', 'repo': 'test-repo'}
-        files = [{'path': 'test.py', 'content': 'code'}]
-        
-        # Use ACTUAL private method name with underscore
-        result = await analyzer._save_output_async(
-            str(temp_directory), 'json', metadata, files, 'test-repo'
-        )
-        
-        assert 'json' in result
-        assert (temp_directory / 'test-repo.json').exists()
-        
-        # Test binary format
-        result = await analyzer._save_output_async(
-            str(temp_directory), 'bin', metadata, files, 'test-repo-bin'
-        )
-        
-        assert 'bin' in result
-        assert (temp_directory / 'test-repo-bin.bin').exists()
+        with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=test_token):
+            analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
+            
+            metadata = {'test': 'data', 'repo': 'test-repo'}
+            files = [{'path': 'test.py', 'content': 'code'}]
+            
+            # Use ACTUAL private method name with underscore
+            result = await analyzer._save_output_async(
+                str(temp_directory), 'json', metadata, files, 'test-repo'
+            )
+            
+            assert 'json' in result
+            assert (temp_directory / 'test-repo.json').exists()
+            
+            # Test binary format
+            result = await analyzer._save_output_async(
+                str(temp_directory), 'bin', metadata, files, 'test-repo-bin'
+            )
+            
+            assert 'bin' in result
+            assert (temp_directory / 'test-repo-bin.bin').exists()
 
     @pytest.mark.asyncio
     async def test_empty_repository_error_conditions(self, test_token, mock_logger):
@@ -296,6 +329,13 @@ class TestGitHubRepositoryAnalyzerAdvanced:
 class TestCoreAdvancedIntegration:
     """Advanced integration test scenarios"""
 
+    @pytest.fixture(autouse=True)
+    def mock_cli_async_operations(self):
+        """Prevent async_main coroutine creation in all tests - ROOT CAUSE SOLUTION"""
+        with patch('py_github_analyzer.cli.asyncio.run', return_value=0), \
+             patch('py_github_analyzer.cli.async_main', return_value=0):
+            yield
+
     @pytest.mark.asyncio
     async def test_complete_failure_recovery_chain(self, test_token, mock_logger):
         """Test complete failure -> fallback -> recovery chain"""
@@ -313,38 +353,40 @@ class TestCoreAdvancedIntegration:
     @pytest.mark.asyncio
     async def test_performance_under_load(self, test_token, mock_logger):
         """Test analyzer performance under concurrent load"""
-        analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
-        
-        # Test concurrent analysis
-        tasks = [
-            analyzer.analyze_repository_async(f'https://github.com/test/repo{i}')
-            for i in range(3)  # Small concurrent load
-        ]
-        
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        # All should complete (success or graceful failure)
-        assert len(results) == 3
-        for result in results:
-            if isinstance(result, dict):
-                assert 'metadata' in result
-            elif isinstance(result, Exception):
-                # Exceptions are also acceptable in concurrent scenarios
-                pass
+        with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=test_token):
+            analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
+            
+            # Test concurrent analysis
+            tasks = [
+                analyzer.analyze_repository_async(f'https://github.com/test/repo{i}')
+                for i in range(3)  # Small concurrent load
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # All should complete (success or graceful failure)
+            assert len(results) == 3
+            for result in results:
+                if isinstance(result, dict):
+                    assert 'metadata' in result
+                elif isinstance(result, Exception):
+                    # Exceptions are also acceptable in concurrent scenarios
+                    pass
 
     @pytest.mark.asyncio
     async def test_memory_cleanup_after_errors(self, test_token, mock_logger):
         """Test proper memory cleanup after various error scenarios"""
-        analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
-        
-        # Test multiple error scenarios in sequence
-        for i in range(5):
-            try:
-                result = await analyzer.analyze_repository_async(f'https://github.com/fail/test{i}')
-                assert isinstance(result, dict)
-            except Exception:
-                pass  # Exceptions are acceptable
-        
-        # Analyzer should still be functional
-        assert analyzer.token == test_token
-        assert analyzer.logger == mock_logger
+        with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=test_token):
+            analyzer = GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
+            
+            # Test multiple error scenarios in sequence
+            for i in range(5):
+                try:
+                    result = await analyzer.analyze_repository_async(f'https://github.com/fail/test{i}')
+                    assert isinstance(result, dict)
+                except Exception:
+                    pass  # Exceptions are acceptable
+            
+            # Analyzer should still be functional
+            assert analyzer.token == test_token
+            assert analyzer.logger == mock_logger
