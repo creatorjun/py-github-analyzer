@@ -112,6 +112,8 @@ class LanguageDetector:
         # Map extensions to languages
         extension_map = {
             ".py": "python",
+            ".pyx": "python",
+            ".pyi": "python",
             ".js": "javascript", ".jsx": "javascript", ".mjs": "javascript",
             ".ts": "typescript", ".tsx": "typescript",
             ".java": "java",
