@@ -4,6 +4,7 @@ py-github-analyzer: High-performance async GitHub repository analyzer
 with AI-optimized code extraction and smart .env file support
 """
 
+import os
 from typing import Any, Dict
 
 try:
@@ -59,19 +60,19 @@ def check_env_file() -> Dict[str, Any]:
         if TokenUtils:
             env_files = TokenUtils._find_env_files()
             env_vars = TokenUtils._load_env_variables()
-
+            
             token_sources = []
             for env_var in ["GITHUB_TOKEN", "GH_TOKEN"]:
                 if os.environ.get(env_var):
                     token_sources.append(f"{env_var} (system)")
                 if env_vars.get(env_var):
                     token_sources.append(f"{env_var} (.env)")
-
+            
             token = TokenUtils.get_github_token()
             token_info = (
                 TokenUtils.get_token_info(token) if token else {"status": "none"}
             )
-
+            
             return {
                 "env_files_found": len(env_files),
                 "env_file_paths": env_files,
@@ -103,53 +104,47 @@ def get_token_sources() -> Dict[str, Any]:
     try:
         if not TokenUtils:
             return {"sources": [], "error": "TokenUtils not available"}
-
+        
         sources = []
-
+        
+        # Check system environment variables
         for env_var in ["GITHUB_TOKEN", "GH_TOKEN"]:
             if os.environ.get(env_var):
-                sources.append(
-                    {
-                        "type": "system_environment",
-                        "variable": env_var,
-                        "available": True,
-                    }
-                )
-
+                sources.append({
+                    "type": "system_environment",
+                    "variable": env_var,
+                    "available": True,
+                })
+        
+        # Check .env files
         env_files = TokenUtils._find_env_files()
         env_vars = TokenUtils._load_env_variables()
-
+        
         for env_var in ["GITHUB_TOKEN", "GH_TOKEN"]:
             if env_vars.get(env_var):
-                sources.append(
-                    {
-                        "type": "env_file",
-                        "variable": env_var,
-                        "available": True,
-                        "file_count": len(env_files),
-                    }
-                )
-
+                sources.append({
+                    "type": "env_file",
+                    "variable": env_var,
+                    "available": True,
+                    "file_count": len(env_files),
+                })
+        
         return {"sources": sources}
-
     except Exception as e:
         return {"sources": [], "error": str(e)}
-
-
-import os
 
 
 def print_banner():
     """Print package banner"""
     banner = f"""
 ╭─────────────────────────────────────────────────────────────────╮
-│                   🚀 py-github-analyzer v{__version__}                   │
+│ 🚀 py-github-analyzer v{__version__}                               │
 │                                                                 │
-│  High-performance async GitHub repository analyzer              │
-│  with AI-optimized code extraction and smart .env support      │
+│ High-performance async GitHub repository analyzer               │
+│ with AI-optimized code extraction and smart .env support       │
 │                                                                 │
-│  Author: {__author__}                                     │
-│  Email:  {__email__}                         │
+│ Author: {__author__}                                    │
+│ Email: {__email__}                         │
 ╰─────────────────────────────────────────────────────────────────╯
 """
     print(banner)
@@ -159,5 +154,5 @@ if __name__ == "__main__":
     print_banner()
     print("\n🔧 Quick usage:")
     print("  Python API: import py_github_analyzer as pga")
-    print("  CLI usage:  py-github-analyzer https://github.com/user/repo")
+    print("  CLI usage: py-github-analyzer https://github.com/user/repo")
     print("  .env check: pga.check_env_file()")

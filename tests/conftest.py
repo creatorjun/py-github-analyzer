@@ -1,439 +1,338 @@
 """
-Pytest configuration and shared fixtures for py-github-analyzer tests
-Provides common test fixtures and utilities for all test modules
+pytest configuration and shared fixtures for py-github-analyzer tests
+테스트 공통 설정 및 fixture 정의
 """
 
+import asyncio
+import os
 import pytest
 import tempfile
 import shutil
-import zipfile
-import io
 from pathlib import Path
-from unittest.mock import MagicMock, AsyncMock
-from typing import Dict, List, Any
+from unittest.mock import Mock, AsyncMock, patch
+from typing import Dict, Any, List
 
-from py_github_analyzer.logger import get_logger
-from py_github_analyzer.exceptions import GitHubAnalyzerError
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-# ==================================================
-# Test Configuration
-# ==================================================
+# 테스트용 상수 및 설정
+TEST_REPO_URL = "https://github.com/testuser/testrepo"
+TEST_OWNER = "testuser"
+TEST_REPO = "testrepo"
+TEST_TOKEN = "ghp_" + "x" * 36  # 40자 테스트 토큰
 
-def pytest_configure(config):
-    """Configure pytest with custom markers"""
-    config.addinivalue_line("markers", "unit: Unit tests (fast, isolated)")
-    config.addinivalue_line("markers", "integration: Integration tests (slower)")
-    config.addinivalue_line("markers", "async_test: Tests that use async/await")
-    config.addinivalue_line("markers", "slow: Tests that take longer to run")
-
-# ==================================================
-# Directory and File Fixtures
-# ==================================================
+@pytest.fixture(scope="session")
+def event_loop():
+    """Session-wide event loop for async tests"""
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 @pytest.fixture
-def temp_directory():
-    """Create and cleanup temporary directory"""
+def temp_dir():
+    """임시 디렉토리 생성 및 정리"""
     temp_dir = tempfile.mkdtemp()
-    temp_path = Path(temp_dir)
-    try:
-        yield temp_path
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    yield Path(temp_dir)
+    shutil.rmtree(temp_dir, ignore_errors=True)
 
 @pytest.fixture
-def test_token():
-    """GitHub test token fixture"""
-    return "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456"
+def mock_env_vars():
+    """환경 변수 모킹"""
+    with patch.dict(os.environ, {}, clear=True):
+        yield
 
 @pytest.fixture
-def sample_zip_content():
-    """Sample ZIP file content for testing"""
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w') as zip_file:
-        zip_file.writestr('test-repo-main/main.py', 'print("hello")')
-        zip_file.writestr('test-repo-main/utils.py', 'def helper(): return True')
-        zip_file.writestr('test-repo-main/requirements.txt', 'requests\npytest')
-        zip_file.writestr('test-repo-main/README.md', '# Test Repo\nA test repository')
-    
-    return zip_buffer.getvalue()
+def mock_github_token():
+    """GitHub 토큰 모킹"""
+    with patch.dict(os.environ, {"GITHUB_TOKEN": TEST_TOKEN}):
+        yield TEST_TOKEN
 
 @pytest.fixture
-def mock_httpx_response():
-    """Factory for creating mock httpx responses"""
-    def _create_response(status_code=200, json_data=None, content=None):
-        response = MagicMock()
-        response.status_code = status_code
-        response.json.return_value = json_data or {}
-        response.content = content or b""
-        response.text = (content or b"").decode('utf-8', errors='ignore')
-        response.headers = {}
-        response.raise_for_status = MagicMock()
-        return response
-    return _create_response
-
-@pytest.fixture
-def mock_github_api_responses():
-    """Mock GitHub API responses"""
+def sample_repo_info():
+    """샘플 레포지토리 정보"""
     return {
-        'repository_info': {
-            'name': 'test-repo',
-            'full_name': 'test-owner/test-repo',
-            'owner': {'login': 'test-owner'},
-            'language': 'Python',
-            'private': False,
-            'size': 1024,
-            'stargazers_count': 5,
-            'forks_count': 2,
-            'default_branch': 'main'
-        },
-        'rate_limit_headers': {
-            'x-ratelimit-remaining': '4999'
-        },
-        'tree_response': {
-            'tree': [
-                {'path': 'main.py', 'type': 'blob', 'size': 45},
-                {'path': 'requirements.txt', 'type': 'blob', 'size': 20}
-            ]
-        }
+        "name": TEST_REPO,
+        "full_name": f"{TEST_OWNER}/{TEST_REPO}",
+        "description": "Test repository",
+        "language": "Python",
+        "size": 1024,
+        "default_branch": "main",
+        "private": False,
+        "archived": False,
+        "disabled": False,
+        "topics": ["test", "python"],
+        "license": {"name": "MIT"},
+        "created_at": "2023-01-01T00:00:00Z",
+        "updated_at": "2023-12-31T23:59:59Z",
+        "clone_url": f"https://github.com/{TEST_OWNER}/{TEST_REPO}.git",
+        "html_url": f"https://github.com/{TEST_OWNER}/{TEST_REPO}",
+        "stargazers_count": 100,
+        "watchers_count": 50,
+        "forks_count": 25,
+        "open_issues_count": 5,
     }
-
-@pytest.fixture
-def repository_analyzer(test_token, mock_logger):
-    """Repository analyzer fixture (synchronous)"""
-    from py_github_analyzer.core import GitHubRepositoryAnalyzer
-    with patch('py_github_analyzer.core.TokenUtils.get_github_token', return_value=test_token):
-        return GitHubRepositoryAnalyzer(token=test_token, logger=mock_logger)
-
 
 @pytest.fixture
 def sample_file_contents():
-    """Sample file contents for testing"""
-    return [
-        {
-            "path": "main.py",
-            "content": 'print("Hello World")\n# Simple Python file',
-            "size": 45,
-            "language": "python",
-            "lines": 2,
-        },
-        {
-            "path": "utils.py",
-            "content": "def helper_function():\n    return True",
-            "size": 35,
-            "language": "python",
-            "lines": 2,
-        },
-        {
-            "path": "package.json",
-            "content": '{"name": "test", "version": "1.0.0"}',
-            "size": 35,
-            "language": "json",
-            "lines": 1,
-        },
-        {
-            "path": "README.md",
-            "content": "# Test Repository\nThis is a test.",
-            "size": 30,
-            "language": "markdown",
-            "lines": 2,
-        },
-    ]
-
-@pytest.fixture
-def sample_repository_info():
-    """Sample repository information"""
-    return {
-        "name": "test-repo",
-        "full_name": "owner/test-repo",
-        "owner": "owner",
-        "description": "A test repository for unit testing",
-        "language": "Python",
-        "topics": ["test", "python"],
-        "default_branch": "main",
-        "size": 1024,
-        "stargazers_count": 5,
-        "forks_count": 2,
-        "watchers_count": 3,
-        "created_at": "2023-01-01T00:00:00Z",
-        "updated_at": "2023-12-01T00:00:00Z",
-        "pushed_at": "2023-12-01T00:00:00Z",
-        "clone_url": "https://github.com/owner/test-repo.git",
-        "ssh_url": "git@github.com:owner/test-repo.git",
-        "homepage": "",
-        "license": {"key": "mit", "name": "MIT License"},
-        "private": False,
-    }
-
-# ==================================================
-# Mock Fixtures
-# ==================================================
-
-@pytest.fixture
-def mock_logger():
-    """Mock logger for testing"""
-    logger = MagicMock()
-    logger.info = MagicMock()
-    logger.debug = MagicMock()
-    logger.warning = MagicMock()
-    logger.error = MagicMock()
-    logger.critical = MagicMock()
-    return logger
-
-@pytest.fixture
-def mock_github_client():
-    """Mock GitHub client for testing"""
-    client = AsyncMock()
-    client.get_repository_info = AsyncMock()
-    client.get_repository_files = AsyncMock()
-    client.download_repository_zip = AsyncMock()
-    client.get_file_content = AsyncMock()
-    client.close = AsyncMock()
-    return client
-
-@pytest.fixture
-def mock_file_processor():
-    """Mock file processor for testing"""
-    processor = MagicMock()
-    processor.process_files = MagicMock()
-    processor.detect_language = MagicMock(return_value="python")
-    processor.extract_dependencies = MagicMock(return_value=[])
-    processor.detect_frameworks = MagicMock(return_value=[])
-    processor.calculate_complexity = MagicMock(return_value=1.0)
-    return processor
-
-@pytest.fixture
-def mock_metadata_generator():
-    """Mock metadata generator for testing"""
-    generator = MagicMock()
-    generator.generate_metadata = MagicMock()
-    generator.generate_summary = MagicMock(return_value="Test summary")
-    return generator
-
-# ==================================================
-# GitHub API Response Fixtures
-# ==================================================
-
-@pytest.fixture
-def github_api_repository_response():
-    """Sample GitHub API repository response"""
-    return {
-        "id": 123456,
-        "name": "test-repo",
-        "full_name": "owner/test-repo",
-        "owner": {
-            "login": "owner",
-            "id": 789,
-            "type": "User",
-        },
-        "private": False,
-        "description": "A test repository",
-        "language": "Python",
-        "size": 1024,
-        "stargazers_count": 5,
-        "watchers_count": 3,
-        "forks_count": 2,
-        "default_branch": "main",
-        "topics": ["test", "python"],
-        "created_at": "2023-01-01T00:00:00Z",
-        "updated_at": "2023-12-01T00:00:00Z",
-        "pushed_at": "2023-12-01T00:00:00Z",
-        "clone_url": "https://github.com/owner/test-repo.git",
-        "ssh_url": "git@github.com:owner/test-repo.git",
-        "homepage": None,
-        "license": {
-            "key": "mit",
-            "name": "MIT License",
-            "url": "https://api.github.com/licenses/mit",
-        },
-    }
-
-@pytest.fixture
-def github_api_contents_response():
-    """Sample GitHub API contents response"""
+    """샘플 파일 컨텐츠"""
     return [
         {
             "name": "main.py",
             "path": "main.py",
             "type": "file",
-            "size": 45,
-            "download_url": "https://raw.githubusercontent.com/owner/test-repo/main/main.py",
+            "size": 500,
+            "download_url": f"https://raw.githubusercontent.com/{TEST_OWNER}/{TEST_REPO}/main/main.py",
+            "git_url": f"https://api.github.com/repos/{TEST_OWNER}/{TEST_REPO}/git/blobs/abc123",
+            "html_url": f"https://github.com/{TEST_OWNER}/{TEST_REPO}/blob/main/main.py",
+            "sha": "abc123"
         },
         {
-            "name": "utils.py",
-            "path": "utils.py",
+            "name": "requirements.txt",
+            "path": "requirements.txt", 
             "type": "file",
-            "size": 35,
-            "download_url": "https://raw.githubusercontent.com/owner/test-repo/main/utils.py",
-        },
-        {
-            "name": "README.md",
-            "path": "README.md",
-            "type": "file",
-            "size": 30,
-            "download_url": "https://raw.githubusercontent.com/owner/test-repo/main/README.md",
+            "size": 200,
+            "download_url": f"https://raw.githubusercontent.com/{TEST_OWNER}/{TEST_REPO}/main/requirements.txt",
+            "git_url": f"https://api.github.com/repos/{TEST_OWNER}/{TEST_REPO}/git/blobs/def456",
+            "html_url": f"https://github.com/{TEST_OWNER}/{TEST_REPO}/blob/main/requirements.txt",
+            "sha": "def456"
         },
         {
             "name": "src",
             "path": "src",
-            "type": "dir",
-        },
+            "type": "dir"
+        }
     ]
 
 @pytest.fixture
-def github_rate_limit_response():
-    """Sample GitHub API rate limit response"""
+def sample_file_data():
+    """샘플 파일 데이터"""
     return {
-        "resources": {
-            "core": {
-                "limit": 5000,
-                "remaining": 4999,
-                "reset": 1640995200,
-                "used": 1,
-            },
-            "search": {
-                "limit": 30,
-                "remaining": 30,
-                "reset": 1640995200,
-                "used": 0,
-            },
-        },
-        "rate": {
-            "limit": 5000,
-            "remaining": 4999,
-            "reset": 1640995200,
-            "used": 1,
-        },
+        "name": "main.py",
+        "path": "main.py",
+        "content": "aW1wb3J0IG9zCgpkZWYgbWFpbigpOgogICAgcHJpbnQoIkhlbGxvLCBXb3JsZCEiKQoKaWYgX19uYW1lX18gPT0gIl9fbWFpbl9fIjoKICAgIG1haW4oKQ==",  # base64 encoded Python code
+        "encoding": "base64",
+        "size": 89,
+        "sha": "abc123",
+        "download_url": f"https://raw.githubusercontent.com/{TEST_OWNER}/{TEST_REPO}/main/main.py"
     }
 
-# ==================================================
-# Analysis Result Fixtures  
-# ==================================================
+@pytest.fixture
+def mock_async_github_client():
+    """AsyncGitHubClient 모킹"""
+    mock_client = AsyncMock()
+    
+    # 기본 메서드들 모킹
+    mock_client.get_repository_info = AsyncMock()
+    mock_client.get_repository_contents = AsyncMock()
+    mock_client.get_file_content = AsyncMock()
+    mock_client.batch_download_files = AsyncMock()
+    mock_client.download_zip_archive = AsyncMock()
+    mock_client.close = AsyncMock()
+    mock_client.rate_limit_manager = Mock()
+    
+    return mock_client
 
 @pytest.fixture
-def sample_analysis_result():
-    """Sample complete analysis result"""
+def sample_processed_files():
+    """처리된 파일 샘플"""
+    return [
+        {
+            "path": "main.py",
+            "content": "import os\n\ndef main():\n    print('Hello, World!')\n\nif __name__ == '__main__':\n    main()",
+            "size": 89,
+            "type": "file",
+            "language": "python",
+            "lines": 6,
+            "complexity": 1.5,
+            "priority": 950
+        },
+        {
+            "path": "requirements.txt",
+            "content": "requests>=2.25.0\nclick>=8.0.0\naiohttp>=3.8.0",
+            "size": 45,
+            "type": "file", 
+            "language": "text",
+            "lines": 3,
+            "complexity": 1.0,
+            "priority": 600
+        }
+    ]
+
+@pytest.fixture
+def mock_httpx_response():
+    """httpx Response 모킹"""
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.is_success = True
+    mock_response.headers = {
+        "x-ratelimit-limit": "5000", 
+        "x-ratelimit-remaining": "4999",
+        "x-ratelimit-reset": "1640995200"
+    }
+    mock_response.json = Mock()
+    mock_response.content = b"test content"
+    mock_response.text = "test content"
+    return mock_response
+
+@pytest.fixture  
+def mock_httpx_client():
+    """httpx AsyncClient 모킹"""
+    mock_client = AsyncMock()
+    mock_client.get = AsyncMock()
+    mock_client.post = AsyncMock()
+    mock_client.aclose = AsyncMock()
+    return mock_client
+
+class MockLogger:
+    """테스트용 로거 클래스"""
+    def __init__(self):
+        self.messages = []
+        self.debug_enabled = True
+        self.verbose = False
+    
+    def debug(self, message, *args, **kwargs):
+        self.messages.append(f"DEBUG: {message}")
+    
+    def info(self, message, *args, **kwargs):
+        self.messages.append(f"INFO: {message}")
+    
+    def warning(self, message, *args, **kwargs):
+        self.messages.append(f"WARNING: {message}")
+    
+    def error(self, message, *args, **kwargs):
+        self.messages.append(f"ERROR: {message}")
+    
+    def success(self, message, *args, **kwargs):
+        self.messages.append(f"SUCCESS: {message}")
+    
+    def progress_start(self, total, description="Processing"):
+        return MockProgress()
+    
+    def format_size(self, size):
+        return f"{size} bytes"
+    
+    def format_duration(self, seconds):
+        return f"{seconds:.2f}s"
+
+class MockProgress:
+    """테스트용 진행률 표시기"""
+    def __init__(self):
+        self.current = 0
+        self.total = 100
+    
+    def update(self, advance=1):
+        self.current += advance
+    
+    def finish(self):
+        self.current = self.total
+
+@pytest.fixture
+def mock_logger():
+    """Mock 로거 fixture"""
+    return MockLogger()
+
+@pytest.fixture
+def sample_zip_content():
+    """샘플 ZIP 파일 컨텐츠"""
+    import zipfile
+    import io
+    
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zip_file:
+        zip_file.writestr('testrepo-main/main.py', 'print("Hello World")')
+        zip_file.writestr('testrepo-main/requirements.txt', 'requests>=2.25.0')
+        zip_file.writestr('testrepo-main/README.md', '# Test Repository')
+    
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+@pytest.fixture
+def sample_metadata():
+    """샘플 메타데이터"""
     return {
-        "success": True,
         "repository": {
-            "name": "test-repo",
-            "owner": "owner",
+            "name": TEST_REPO,
+            "owner": TEST_OWNER,
             "description": "Test repository",
             "language": "Python",
+            "topics": ["test", "python"],
             "size": 1024,
-            "stars": 5,
-            "forks": 2,
+            "default_branch": "main"
         },
         "analysis": {
-            "total_files": 4,
-            "total_size": 145,
-            "primary_language": "Python",
-            "languages": {"Python": 55.2, "JSON": 24.1, "Markdown": 20.7},
+            "total_files": 3,
+            "total_size": 745,
+            "languages": {"Python": 500, "Markdown": 200, "Text": 45},
             "complexity_score": 2.5,
-            "file_count_by_type": {"python": 2, "json": 1, "markdown": 1},
+            "priority_files": ["main.py", "requirements.txt"]
         },
-        "files": [
-            {
-                "path": "main.py",
-                "size": 45,
-                "language": "python",
-                "lines": 2,
-                "complexity": 1.0,
-            },
-            {
-                "path": "utils.py", 
-                "size": 35,
-                "language": "python",
-                "lines": 2,
-                "complexity": 1.5,
-            },
-        ],
-        "dependencies": ["requests", "pytest"],
-        "frameworks": ["pytest"],
-        "metadata": {
-            "analysis_time": "2023-12-01T12:00:00Z",
-            "version": "1.0.0",
-            "method": "api",
-        },
+        "files": []
     }
 
-# ==================================================
-# Async Test Fixtures
-# ==================================================
+# 환경 변수 리셋을 위한 fixture
+@pytest.fixture(autouse=True)
+def reset_environment():
+    """각 테스트 후 환경 변수 리셋"""
+    original_env = os.environ.copy()
+    yield
+    os.environ.clear()
+    os.environ.update(original_env)
 
-@pytest.fixture
-def event_loop():
-    """Create an event loop for async tests"""
-    import asyncio
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
+# 비동기 테스트를 위한 마커
+pytest_plugins = ["pytest_asyncio"]
 
-# ==================================================
-# HTTP Mock Fixtures
-# ==================================================
+# 테스트용 파일 경로 상수
+TEST_FILES_DIR = Path(__file__).parent / "test_files"
+SAMPLE_PYTHON_FILE = """
+import os
+import sys
+from typing import List, Dict
 
-@pytest.fixture
-def mock_httpx_client():
-    """Mock httpx client for testing"""
-    client = MagicMock()
+class TestClass:
+    def __init__(self, name: str):
+        self.name = name
     
-    # Mock response object
-    response = MagicMock()
-    response.status_code = 200
-    response.json = MagicMock()
-    response.text = ""
-    response.content = b""
-    response.headers = {}
-    response.raise_for_status = MagicMock()
-    
-    # Async context manager support
-    async def async_enter():
-        return client
-    
-    async def async_exit(exc_type, exc_val, exc_tb):
-        pass
-    
-    client.__aenter__ = async_enter
-    client.__aexit__ = async_exit
-    client.get = AsyncMock(return_value=response)
-    client.post = AsyncMock(return_value=response)
-    
-    return client
+    def process_data(self, data: List[Dict]) -> Dict:
+        result = {}
+        for item in data:
+            if 'key' in item:
+                result[item['key']] = item.get('value', None)
+        return result
 
-# ==================================================
-# Error Simulation Fixtures
-# ==================================================
+def main():
+    test = TestClass("example")
+    sample_data = [
+        {'key': 'a', 'value': 1},
+        {'key': 'b', 'value': 2}
+    ]
+    result = test.process_data(sample_data)
+    print(f"Result: {result}")
 
-@pytest.fixture
-def network_error_client():
-    """Mock client that raises network errors"""
-    client = AsyncMock()
-    client.get_repository_info.side_effect = GitHubAnalyzerError("Network error")
-    return client
+if __name__ == "__main__":
+    main()
+"""
 
-@pytest.fixture
-def rate_limit_error_client():
-    """Mock client that raises rate limit errors"""
-    from py_github_analyzer.exceptions import RateLimitExceededError
-    client = AsyncMock()
-    client.get_repository_info.side_effect = RateLimitExceededError(
-        "Rate limit exceeded", reset_time=1640995200, remaining=0
-    )
-    return client
+SAMPLE_JAVASCRIPT_FILE = """
+const express = require('express');
+const app = express();
 
-# ==================================================
-# Additional fixtures for missing test dependencies
-# ==================================================
+app.get('/', (req, res) => {
+  res.json({ message: 'Hello World' });
+});
 
-@pytest.fixture
-def clean_environment(monkeypatch):
-    """Clean environment without GitHub tokens"""
-    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    monkeypatch.delenv("GH_TOKEN", raising=False)
-    return monkeypatch
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+});
+"""
 
-@pytest.fixture
-def mock_token_environment(monkeypatch):
-    """Environment with mock GitHub token"""
-    monkeypatch.setenv("GITHUB_TOKEN", "ghp_1234567890abcdefghijklmnopqrstuvwxyz123456")
-    return monkeypatch
+SAMPLE_CONFIG_FILE = """
+[settings]
+debug = true
+max_workers = 4
+timeout = 30
+
+[database]
+host = localhost
+port = 5432
+name = testdb
+"""

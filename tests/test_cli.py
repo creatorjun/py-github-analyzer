@@ -1,470 +1,660 @@
 """
-Unit tests for CLI Module (Fixed with proper implementation)
-Subprocess-based testing for argparse CLI without Click dependencies
+Unit tests for CLI Module
+CORRECTED FOR ACTUAL IMPLEMENTATION - Complete CLI testing
 """
 
 import pytest
-import subprocess
-import sys
 import json
 import tempfile
 import os
+import sys
+import asyncio
 from pathlib import Path
-from unittest.mock import patch, MagicMock, AsyncMock
+from unittest.mock import patch, MagicMock, AsyncMock, call
+from io import StringIO
 import argparse
 
 from py_github_analyzer.cli import (
     main, create_argument_parser, print_banner, check_env_status,
-    print_analysis_info, print_results_summary, TOKEN_UTILS_AVAILABLE
+    print_analysis_info, print_results_summary, print_token_help,
+    async_main
 )
-
-from py_github_analyzer.exceptions import (
-    GitHubAnalyzerError, NetworkError, RateLimitExceededError,
-    AuthenticationError, PrivateRepositoryError, ValidationError
-)
+from py_github_analyzer.exceptions import GitHubAnalyzerError, ValidationError
 
 
 @pytest.mark.unit
-class TestCLIArgumentParser:
-    """Test CLI argument parser functionality"""
+class TestArgumentParser:
+    """Test CLI argument parsing"""
 
-    def test_create_argument_parser(self):
-        """Test argument parser creation"""
+    def test_create_argument_parser_basic(self):
+        """Test basic argument parser creation"""
         parser = create_argument_parser()
+        
         assert isinstance(parser, argparse.ArgumentParser)
         assert parser.prog == "py-github-analyzer"
 
-    @pytest.mark.parametrize("args,expected_url", [
-        (["https://github.com/owner/repo"], "https://github.com/owner/repo"),
-        (["owner/repo"], "owner/repo"),
-        (["github.com/owner/repo"], "github.com/owner/repo"),
-    ])
-    def test_parse_arguments_valid_url(self, args, expected_url):
-        """Test parsing valid repository URLs"""
+    def test_parse_required_url_argument(self):
+        """Test parsing required URL argument"""
         parser = create_argument_parser()
-        parsed_args = parser.parse_args(args)
-        assert parsed_args.url == expected_url
+        
+        args = parser.parse_args(['https://github.com/test/repo'])
+        
+        assert args.url == 'https://github.com/test/repo'
+        assert args.output == './results'  # default
+        assert args.format == 'both'  # default
+        assert args.method == 'auto'  # default
 
-    @pytest.mark.parametrize("args,option,expected", [
-        (["owner/repo", "--github-token", "test_token"], "github_token", "test_token"),
-        (["owner/repo", "-t", "test_token"], "github_token", "test_token"),
-        (["owner/repo", "--output", "output_dir"], "output", "output_dir"),
-        (["owner/repo", "-o", "output_dir"], "output", "output_dir"),
-        (["owner/repo", "--method", "api"], "method", "api"),
-        (["owner/repo", "-m", "zip"], "method", "zip"),
-        (["owner/repo", "--verbose"], "verbose", True),
-        (["owner/repo", "-v"], "verbose", True),
-        (["owner/repo", "--format", "json"], "format", "json"),
-        (["owner/repo", "-f", "bin"], "format", "bin"),
-        (["owner/repo", "--dry-run"], "dry_run", True),
-        (["owner/repo", "--no-fallback"], "no_fallback", True),
-        (["--check-env"], "check_env", True),
-    ])
-    def test_parse_arguments_options(self, args, option, expected):
-        """Test parsing various CLI options"""
+    def test_parse_all_optional_arguments(self):
+        """Test parsing all optional arguments"""
         parser = create_argument_parser()
-        parsed_args = parser.parse_args(args)
-        assert getattr(parsed_args, option) == expected
+        
+        args = parser.parse_args([
+            'https://github.com/test/repo',
+            '--output', './custom_output',
+            '--format', 'json',
+            '--github-token', 'test_token',
+            '--method', 'api',
+            '--verbose',
+            '--dry-run',
+            '--no-fallback'
+        ])
+        
+        assert args.url == 'https://github.com/test/repo'
+        assert args.output == './custom_output'
+        assert args.format == 'json'
+        assert args.github_token == 'test_token'
+        assert args.method == 'api'
+        assert args.verbose is True
+        assert args.dry_run is True
+        assert args.no_fallback is True
 
-    def test_parse_arguments_defaults(self):
-        """Test default argument values"""
+    def test_parse_short_arguments(self):
+        """Test parsing short argument forms"""
         parser = create_argument_parser()
-        parsed_args = parser.parse_args(["owner/repo"])
-        assert parsed_args.github_token is None
-        assert parsed_args.output == "./results"
-        assert parsed_args.method == "auto"
-        assert parsed_args.verbose is False
-        assert parsed_args.format == "both"
-        assert parsed_args.dry_run is False
-        assert parsed_args.no_fallback is False
-        assert parsed_args.check_env is False
+        
+        args = parser.parse_args([
+            'https://github.com/test/repo',
+            '-o', './output',
+            '-f', 'bin',
+            '-t', 'token123',
+            '-m', 'zip',
+            '-v'
+        ])
+        
+        assert args.output == './output'
+        assert args.format == 'bin'
+        assert args.github_token == 'token123'
+        assert args.method == 'zip'
+        assert args.verbose is True
 
-    def test_check_env_only_no_url_required(self):
-        """Test that --check-env doesn't require URL"""
+    def test_parse_check_env_flag(self):
+        """Test --check-env flag parsing"""
         parser = create_argument_parser()
-        parsed_args = parser.parse_args(["--check-env"])
-        assert parsed_args.check_env is True
-        assert parsed_args.url is None
+        
+        args = parser.parse_args(['--check-env'])
+        
+        assert args.check_env is True
+        assert args.url is None  # URL not required with --check-env
+
+    def test_parse_version_argument(self):
+        """Test --version argument"""
+        parser = create_argument_parser()
+        
+        with pytest.raises(SystemExit):  # argparse exits with --version
+            parser.parse_args(['--version'])
+
+    def test_invalid_format_choice(self):
+        """Test invalid format choice raises error"""
+        parser = create_argument_parser()
+        
+        with pytest.raises(SystemExit):  # argparse exits on invalid choice
+            parser.parse_args(['https://github.com/test/repo', '--format', 'invalid'])
+
+    def test_invalid_method_choice(self):
+        """Test invalid method choice raises error"""
+        parser = create_argument_parser()
+        
+        with pytest.raises(SystemExit):  # argparse exits on invalid choice
+            parser.parse_args(['https://github.com/test/repo', '--method', 'invalid'])
+
+    def test_help_message(self):
+        """Test help message generation"""
+        parser = create_argument_parser()
+        
+        with pytest.raises(SystemExit):  # argparse exits with --help
+            parser.parse_args(['--help'])
 
 
 @pytest.mark.unit
-class TestCLIUtilities:
-    """Test CLI utility functions"""
+class TestPrintFunctions:
+    """Test CLI print functions"""
 
     def test_print_banner(self, capsys):
         """Test banner printing"""
         print_banner()
-        captured = capsys.readouterr()
-        assert "py-github-analyzer" in captured.out
-        assert "High-Performance" in captured.out
-
-    @pytest.mark.skipif(not TOKEN_UTILS_AVAILABLE, reason="TokenUtils not available")
-    def test_check_env_status_with_token_available(self, capsys):
-        """Test environment status check when TokenUtils is available"""
-        result = check_env_status()
-        captured = capsys.readouterr()
-        # Should complete without error
-        assert result is True or result is False
-        assert "Checking .env file status" in captured.out
-
-    def test_check_env_status_fallback(self, capsys):
-        """Test environment status check with fallback behavior"""
-        # This should work regardless of TokenUtils availability
-        with patch('py_github_analyzer.cli.TOKEN_UTILS_AVAILABLE', False):
-            result = check_env_status()
-            captured = capsys.readouterr()
-            # Should handle gracefully even without full TokenUtils
-            assert isinstance(result, bool)
-
-
-@pytest.mark.integration
-class TestCLIWithSubprocess:
-    """Test CLI using subprocess with proper encoding"""
-
-    def setup_method(self):
-        """Setup for each test method"""
-        self.temp_dir = tempfile.mkdtemp()
-        self.temp_path = Path(self.temp_dir)
-
-    def teardown_method(self):
-        """Cleanup after each test method"""
-        import shutil
-        shutil.rmtree(self.temp_dir, ignore_errors=True)
-
-    def run_cli(self, args, input_data=None, timeout=30, env=None):
-        """Helper to run CLI via subprocess with proper encoding"""
-        cmd = [sys.executable, "-m", "py_github_analyzer"] + args
-        test_env = os.environ.copy()
-        # Force UTF-8 encoding for subprocess
-        test_env.update({
-            'PYTHONIOENCODING': 'utf-8',
-            'PYTHONLEGACYWINDOWSFSENCODING': '0',
-            'PYTHONUTF8': '1'
-        })
-        if env:
-            test_env.update(env)
-
-        try:
-            result = subprocess.run(
-                cmd,
-                input=input_data,
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                timeout=timeout,
-                env=test_env
-            )
-            return result
-        except subprocess.TimeoutExpired:
-            return MagicMock(returncode=1, stdout="", stderr="Timeout")
-        except Exception as e:
-            return MagicMock(returncode=1, stdout="", stderr=str(e))
-
-    def test_cli_help(self):
-        """Test CLI help output"""
-        result = self.run_cli(["--help"])
-        assert result.returncode == 0
-        assert result.stdout is not None
-        assert "py-github-analyzer" in result.stdout
-        # Use more flexible matching for help text
-        help_text = result.stdout.lower()
-        assert ("github" in help_text or "repository" in help_text or "analyzer" in help_text)
-        assert ("help" in help_text or "usage" in help_text)
-
-    def test_cli_version(self):
-        """Test CLI version output"""
-        result = self.run_cli(["--version"])
-        assert result.returncode == 0
-        assert result.stdout is not None
-        assert "py-github-analyzer" in result.stdout
-
-    def test_cli_check_env(self):
-        """Test CLI environment check"""
-        result = self.run_cli(["--check-env"])
-        # May succeed or fail depending on environment setup
-        assert result.returncode in [0, 1]
-        if result.stdout:
-            assert ("Checking" in result.stdout or
-                    "env" in result.stdout.lower() or
-                    "TokenUtils" in result.stdout)
-
-    def test_cli_invalid_arguments(self):
-        """Test CLI with invalid arguments"""
-        result = self.run_cli(["--invalid-option"])
-        assert result.returncode != 0
-        # Should show error message
-        if result.stderr:
-            assert ("error" in result.stderr.lower() or
-                    "unrecognized" in result.stderr.lower() or
-                    "invalid" in result.stderr.lower())
-
-    def test_cli_missing_url(self):
-        """Test CLI without required URL"""
-        result = self.run_cli([])
-        assert result.returncode != 0
-        # Should show error or help about missing URL
-
-
-@pytest.mark.unit
-class TestCLIErrorHandling:
-    """Test CLI error handling scenarios"""
-
-    def test_print_results_summary_success(self, capsys):
-        """Test results summary printing for successful analysis"""
-        result = {
-            "success": True,
-            "metadata": {
-                "repo": "test-repo",
-                "lang": ["Python", "JavaScript"],
-                "size": "1.5 MB",
-                "deps": ["requests", "flask"]
-            },
-            "files": [
-                {"path": "main.py", "lines": 100},
-                {"path": "utils.py", "lines": 50}
-            ],
-            "output_paths": {
-                "json": "output.json",
-                "binary": "output.bin"
-            }
-        }
         
-        print_results_summary(result)
         captured = capsys.readouterr()
-        assert "ANALYSIS RESULTS" in captured.out
-        assert "test-repo" in captured.out
-        assert "Python" in captured.out
-        # Check for the number without exact text match (due to color codes)
-        assert "2" in captured.out  # 2 files
-        assert "output.json" in captured.out
+        assert 'py-github-analyzer' in captured.out
+        assert 'v1.0.0' in captured.out
+        assert '🔍' in captured.out
 
-    def test_print_results_summary_failure(self, capsys):
-        """Test results summary printing for failed analysis"""
-        result = {
-            "success": False,
-            "error_message": "Repository not found"
-        }
-        
-        print_results_summary(result)
-        captured = capsys.readouterr()
-        assert "Analysis failed" in captured.out
-        assert "Repository not found" in captured.out
-
-    def test_print_results_summary_fallback_mode(self, capsys):
-        """Test results summary with fallback mode"""
-        result = {
-            "success": True,
-            "fallback_mode": True,
-            "error_message": "Rate limit exceeded",
-            "metadata": {"repo": "test-repo"},
-            "files": []
-        }
-        
-        print_results_summary(result)
-        captured = capsys.readouterr()
-        assert "fallback mode" in captured.out
-        assert "Rate limit exceeded" in captured.out
-
-    @patch('py_github_analyzer.cli.get_logger')
-    def test_print_analysis_info(self, mock_logger, capsys):
-        """Test analysis info printing"""
-        mock_logger_instance = MagicMock()
-        mock_logger.return_value = mock_logger_instance
-        args = MagicMock()
-        args.url = "https://github.com/test/repo"
-        args.output = "./results"
-        args.format = "json"
-        args.method = "auto"
-        args.github_token = "test_token"
-        args.dry_run = False
-
-        # Test with mocked TokenUtils
+    def test_check_env_status_success(self):
+        """Test successful env status check"""
         with patch('py_github_analyzer.cli.TokenUtils') as mock_token_utils:
-            mock_token_utils.get_github_token.return_value = "test_token"
+            mock_token_utils._find_env_files.return_value = ['.env']
+            mock_token_utils._load_env_variables.return_value = {'GITHUB_TOKEN': 'test'}
+            mock_token_utils.get_github_token.return_value = 'test_token'
             mock_token_utils.get_token_info.return_value = {
                 'status': 'provided',
-                'masked': 'test_***',
+                'masked': 'ghp_...test',
+                'source': 'environment',
+                'type': 'classic',
+                'valid': True
+            }
+            
+            result = check_env_status()
+            
+            assert result is True
+
+    def test_check_env_status_no_token(self):
+        """Test env status check with no token"""
+        with patch('py_github_analyzer.cli.TokenUtils') as mock_token_utils:
+            mock_token_utils._find_env_files.return_value = []
+            mock_token_utils._load_env_variables.return_value = {}
+            mock_token_utils.get_github_token.return_value = None
+            mock_token_utils.get_token_info.return_value = {'status': 'not_provided'}
+            
+            result = check_env_status()
+            
+            assert result is True
+
+    def test_print_analysis_info_with_token(self):
+        """Test print analysis info with token"""
+        mock_args = MagicMock()
+        mock_args.url = 'https://github.com/test/repo'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.method = 'api'
+        mock_args.github_token = 'test_token'
+        mock_args.dry_run = False
+        
+        with patch('py_github_analyzer.cli.get_logger') as mock_get_logger, \
+             patch('py_github_analyzer.cli.TokenUtils') as mock_token_utils:
+            
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            mock_token_utils.get_github_token.return_value = 'test_token'
+            mock_token_utils.get_token_info.return_value = {
+                'status': 'provided',
+                'masked': 'ghp_...test',
                 'source': 'parameter',
                 'type': 'classic',
                 'valid': True
             }
+            
+            print_analysis_info(mock_args)
+            
+            # Verify logger was called with repository info
+            mock_logger.info.assert_any_call("🔍 Repository: https://github.com/test/repo")
+            mock_logger.info.assert_any_call("📁 Output directory: ./output")
 
-            print_analysis_info(args)
-
-            # Verify logger was called with expected info
-            mock_logger_instance.info.assert_called()
-
-            # Check that important information was logged
-            call_args = [call[0][0] for call in mock_logger_instance.info.call_args_list]
-            # Should log repository URL information
-            repo_logged = any("github.com/test/repo" in str(arg) or "test/repo" in str(arg)
-                             for arg in call_args)
-            assert repo_logged
-
-    def test_print_analysis_info_no_token_utils(self, mock_logger):
-        """Test print_analysis_info without token utils"""
-        from py_github_analyzer.cli import print_analysis_info
-        from argparse import Namespace
+    def test_print_analysis_info_without_token(self):
+        """Test print analysis info without token"""
+        mock_args = MagicMock()
+        mock_args.url = 'https://github.com/test/repo'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.method = 'api'
+        mock_args.github_token = None
+        mock_args.dry_run = False
         
-        # args 객체 생성
-        args = Namespace(
-            url="https://github.com/test/repo",
-            output="./results",
-            format="json",
-            method="auto",
-            github_token=None,
-            dry_run=False
-        )
+        with patch('py_github_analyzer.cli.get_logger') as mock_get_logger, \
+             patch('py_github_analyzer.cli.TokenUtils') as mock_token_utils:
+            
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            mock_token_utils.get_github_token.return_value = None
+            mock_token_utils.get_token_info.return_value = {'status': 'not_provided'}
+            
+            print_analysis_info(mock_args)
+            
+            # Should warn about limited rate limits
+            warning_calls = [call for call in mock_logger.warning.call_args_list 
+                           if '60 requests/hour' in str(call)]
+            assert len(warning_calls) > 0
 
-        # 함수 호출 - 실제로 작동하는지만 확인
-        try:
-            print_analysis_info(args)
-            # 함수가 오류 없이 실행되면 테스트 통과
-            assert True
-        except Exception as e:
-            pytest.fail(f"print_analysis_info failed: {e}")
+    def test_print_analysis_info_dry_run(self):
+        """Test print analysis info in dry run mode"""
+        mock_args = MagicMock()
+        mock_args.url = 'https://github.com/test/repo'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.method = 'api'
+        mock_args.github_token = None
+        mock_args.dry_run = True
+        
+        with patch('py_github_analyzer.cli.get_logger') as mock_get_logger, \
+             patch('py_github_analyzer.cli.TokenUtils') as mock_token_utils:
+            
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            mock_token_utils.get_github_token.return_value = None
+            mock_token_utils.get_token_info.return_value = {'status': 'not_provided'}
+            
+            print_analysis_info(mock_args)
+            
+            # Should mention dry-run mode
+            dry_run_calls = [call for call in mock_logger.info.call_args_list 
+                           if 'Dry-run' in str(call)]
+            assert len(dry_run_calls) > 0
 
+    def test_print_results_summary_success(self):
+        """Test print results summary for successful analysis"""
+        result = {
+            'success': True,
+            'metadata': {
+                'repo': 'test/repo',
+                'lang': ['Python', 'JavaScript'],
+                'size': '1.5MB',
+                'deps': ['requests', 'flask']
+            },
+            'files': [
+                {'path': 'main.py', 'lines': 100},
+                {'path': 'app.js', 'lines': 50}
+            ],
+            'output_paths': {
+                'json': './results/output.json',
+                'bin': './results/output.bin'
+            }
+        }
+        
+        with patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            print_results_summary(result)
+            
+            # Verify success indicators
+            mock_logger.info.assert_any_call("🏪 Repository: test/repo")
+            mock_logger.info.assert_any_call("🐍 Primary language: Python")
+            mock_logger.info.assert_any_call("📊 Total files analyzed: 2")
 
-@pytest.mark.asyncio
-async def test_async_main_check_env():
-    """Test async_main with --check-env flag"""
-    with patch('sys.argv', ['py-github-analyzer', '--check-env']):
-        with patch('py_github_analyzer.cli.check_env_status', return_value=True):
-            with patch('py_github_analyzer.cli.print_banner'):
-                from py_github_analyzer.cli import async_main
-                result = await async_main()
-                assert result in [0, 1]
+    def test_print_results_summary_failure(self):
+        """Test print results summary for failed analysis"""
+        result = {
+            'success': False,
+            'error_message': 'Repository not found'
+        }
+        
+        with patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            print_results_summary(result)
+            
+            # Verify error handling
+            mock_logger.error.assert_any_call("Error: Repository not found")
 
+    def test_print_results_summary_fallback_mode(self):
+        """Test print results summary for fallback mode"""
+        result = {
+            'success': True,
+            'fallback_mode': True,
+            'metadata': {'repo': 'test/repo'},
+            'files': [],
+            'error_message': 'ZIP download failed, using fallback'
+        }
+        
+        with patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            print_results_summary(result)
+            
+            # Should mention fallback mode
+            mock_logger.warning.assert_any_call("Original error: ZIP download failed, using fallback")
 
-@pytest.mark.asyncio
-async def test_async_main_missing_url():
-    """Test async_main without URL (should show error)"""
-    with patch('sys.argv', ['py-github-analyzer']):
-        from py_github_analyzer.cli import async_main
-        # Should raise SystemExit due to missing URL
-        with pytest.raises(SystemExit):
-            await async_main()
-
-
-@pytest.mark.integration
-class TestCLIEndToEnd:
-    """End-to-end CLI tests with mocked dependencies"""
-
-    @patch('py_github_analyzer.cli.analyze_repository_async')
-    @patch('py_github_analyzer.cli.asyncio.run')
-    def test_main_function_success(self, mock_asyncio_run, mock_analyze):
-        """Test main function execution with success"""
-        mock_asyncio_run.return_value = 0
-
-        # Mock sys.argv for testing
-        with patch('sys.argv', ['py-github-analyzer', '--help']):
-            # This would normally call sys.exit, so we need to handle that
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            assert exc_info.value.code == 0
-
-    @patch('py_github_analyzer.cli.analyze_repository_async')
-    @patch('py_github_analyzer.cli.asyncio.run')
-    @patch('sys.argv', ['py-github-analyzer', 'test/repo'])
-    def test_main_function_analysis(self, mock_asyncio_run, mock_analyze):
-        """Test main function with repository analysis"""
-        mock_asyncio_run.return_value = 0
-        mock_analyze.return_value = {"success": True, "files": []}
-
-        with pytest.raises(SystemExit) as exc_info:
-            main()
-        # Should complete successfully
-        assert exc_info.value.code == 0
-
-    @patch('py_github_analyzer.cli.asyncio.run')
-    def test_main_function_keyboard_interrupt(self, mock_asyncio_run):
-        """Test main function handling keyboard interrupt"""
-        mock_asyncio_run.side_effect = KeyboardInterrupt()
-        with patch('sys.argv', ['py-github-analyzer', 'test/repo']):
-            with pytest.raises(SystemExit) as exc_info:
-                main()
-            assert exc_info.value.code == 130  # Standard keyboard interrupt exit code
+    def test_print_token_help(self, capsys):
+        """Test token help printing"""
+        print_token_help()
+        
+        captured = capsys.readouterr()
+        assert 'GITHUB TOKEN SETUP GUIDE' in captured.out
+        assert '.env file' in captured.out
+        assert 'https://github.com/settings/tokens' in captured.out
 
 
 @pytest.mark.unit
-class TestCLIHelpers:
-    """Test CLI helper functions"""
+@pytest.mark.asyncio
+class TestAsyncMain:
+    """Test async main function"""
 
-    def test_argument_parser_help_text(self):
-        """Test that help text contains expected information"""
-        parser = create_argument_parser()
-        help_text = parser.format_help()
-        assert "py-github-analyzer" in help_text
-        # More flexible matching for help content
-        help_lower = help_text.lower()
-        assert ("github" in help_lower or "repository" in help_lower)
-        assert "--output" in help_text
-        assert "--github-token" in help_text
-        assert "--verbose" in help_text
-        assert "--method" in help_text
+    async def test_async_main_check_env_flag(self):
+        """Test async main with --check-env flag"""
+        with patch('sys.argv', ['py-github-analyzer', '--check-env']), \
+             patch('py_github_analyzer.cli.print_banner') as mock_banner, \
+             patch('py_github_analyzer.cli.check_env_status', return_value=True) as mock_check:
+            
+            result = await async_main()
+            
+            assert result == 0
+            mock_banner.assert_called_once()
+            mock_check.assert_called_once()
 
-    def test_argument_parser_choices(self):
-        """Test argument parser choice validation"""
-        parser = create_argument_parser()
+    async def test_async_main_missing_url(self):
+        """Test async main with missing URL"""
+        with patch('sys.argv', ['py-github-analyzer']), \
+             patch('py_github_analyzer.cli.create_argument_parser') as mock_parser:
+            
+            mock_parser_instance = MagicMock()
+            mock_parser_instance.parse_args.return_value = MagicMock(
+                check_env=False, url=None
+            )
+            mock_parser_instance.error.side_effect = SystemExit(2)
+            mock_parser.return_value = mock_parser_instance
+            
+            with pytest.raises(SystemExit):
+                await async_main()
 
-        # Test valid choices
-        args = parser.parse_args(["repo", "--method", "api"])
-        assert args.method == "api"
+    async def test_async_main_success(self):
+        """Test successful async main execution"""
+        mock_args = MagicMock()
+        mock_args.verbose = False
+        mock_args.check_env = False
+        mock_args.url = 'https://github.com/test/repo'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.github_token = None
+        mock_args.method = 'auto'
+        mock_args.dry_run = False
+        mock_args.no_fallback = False
+        
+        mock_result = {'success': True, 'metadata': {}, 'files': []}
+        
+        with patch('sys.argv', ['py-github-analyzer', 'https://github.com/test/repo']), \
+             patch('py_github_analyzer.cli.create_argument_parser') as mock_parser, \
+             patch('py_github_analyzer.cli.print_banner') as mock_banner, \
+             patch('py_github_analyzer.cli.print_analysis_info') as mock_info, \
+             patch('py_github_analyzer.cli.analyze_repository_async', return_value=mock_result) as mock_analyze, \
+             patch('py_github_analyzer.cli.print_results_summary') as mock_summary, \
+             patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+            
+            mock_parser_instance = MagicMock()
+            mock_parser_instance.parse_args.return_value = mock_args
+            mock_parser.return_value = mock_parser_instance
+            
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            result = await async_main()
+            
+            assert result == 0
+            mock_banner.assert_called_once()
+            mock_info.assert_called_once_with(mock_args)
+            mock_analyze.assert_called_once()
+            mock_summary.assert_called_once_with(mock_result)
 
-        args = parser.parse_args(["repo", "--format", "json"])
-        assert args.format == "json"
+    async def test_async_main_analysis_failure(self):
+        """Test async main with analysis failure"""
+        mock_args = MagicMock()
+        mock_args.verbose = False
+        mock_args.check_env = False
+        mock_args.url = 'https://github.com/test/repo'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.github_token = None
+        mock_args.method = 'auto'
+        mock_args.dry_run = False
+        mock_args.no_fallback = False
+        
+        mock_result = {'success': False, 'error_message': 'Analysis failed'}
+        
+        with patch('sys.argv', ['py-github-analyzer', 'https://github.com/test/repo']), \
+             patch('py_github_analyzer.cli.create_argument_parser') as mock_parser, \
+             patch('py_github_analyzer.cli.print_banner'), \
+             patch('py_github_analyzer.cli.print_analysis_info'), \
+             patch('py_github_analyzer.cli.analyze_repository_async', return_value=mock_result), \
+             patch('py_github_analyzer.cli.print_results_summary'), \
+             patch('py_github_analyzer.cli.get_logger'):
+            
+            mock_parser_instance = MagicMock()
+            mock_parser_instance.parse_args.return_value = mock_args
+            mock_parser.return_value = mock_parser_instance
+            
+            result = await async_main()
+            
+            assert result == 1  # Failure exit code
 
-        # Test invalid choices would raise SystemExit
-        with pytest.raises(SystemExit):
-            parser.parse_args(["repo", "--method", "invalid"])
+    async def test_async_main_fallback_success(self):
+        """Test async main with fallback mode success"""
+        mock_args = MagicMock()
+        mock_args.verbose = False
+        mock_args.check_env = False
+        mock_args.url = 'https://github.com/test/repo'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.github_token = None
+        mock_args.method = 'auto'
+        mock_args.dry_run = False
+        mock_args.no_fallback = False
+        
+        mock_result = {'success': True, 'fallback_mode': True, 'metadata': {}, 'files': []}
+        
+        with patch('sys.argv', ['py-github-analyzer', 'https://github.com/test/repo']), \
+             patch('py_github_analyzer.cli.create_argument_parser') as mock_parser, \
+             patch('py_github_analyzer.cli.print_banner'), \
+             patch('py_github_analyzer.cli.print_analysis_info'), \
+             patch('py_github_analyzer.cli.analyze_repository_async', return_value=mock_result), \
+             patch('py_github_analyzer.cli.print_results_summary'), \
+             patch('py_github_analyzer.cli.get_logger'):
+            
+            mock_parser_instance = MagicMock()
+            mock_parser_instance.parse_args.return_value = mock_args
+            mock_parser.return_value = mock_parser_instance
+            
+            result = await async_main()
+            
+            assert result == 2  # Success with warnings
 
-        with pytest.raises(SystemExit):
-            parser.parse_args(["repo", "--format", "invalid"])
+    async def test_async_main_validation_error(self):
+        """Test async main with validation error"""
+        mock_args = MagicMock()
+        mock_args.verbose = False
+        mock_args.check_env = False
+        mock_args.url = 'invalid-url'
+        mock_args.output = './output'
+        mock_args.format = 'json'
+        mock_args.github_token = None
+        mock_args.method = 'auto'
+        mock_args.dry_run = False
+        mock_args.no_fallback = False
+        
+        with patch('sys.argv', ['py-github-analyzer', 'invalid-url']), \
+             patch('py_github_analyzer.cli.create_argument_parser') as mock_parser, \
+             patch('py_github_analyzer.cli.print_banner'), \
+             patch('py_github_analyzer.cli.print_analysis_info'), \
+             patch('py_github_analyzer.cli.analyze_repository_async', 
+                   side_effect=ValidationError("Invalid URL format")), \
+             patch('py_github_analyzer.cli.print_token_help'), \
+             patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+            
+            mock_parser_instance = MagicMock()
+            mock_parser_instance.parse_args.return_value = mock_args
+            mock_parser.return_value = mock_parser_instance
+            
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            result = await async_main()
+            
+            assert result == 1
+            mock_logger.error.assert_any_call("Validation error: Invalid URL format")
+
+    async def test_async_main_keyboard_interrupt(self):
+        """Test async main with keyboard interrupt"""
+        mock_args = MagicMock()
+        mock_args.verbose = False
+        mock_args.check_env = False
+        mock_args.url = 'https://github.com/test/repo'
+        
+        with patch('sys.argv', ['py-github-analyzer', 'https://github.com/test/repo']), \
+             patch('py_github_analyzer.cli.create_argument_parser') as mock_parser, \
+             patch('py_github_analyzer.cli.print_banner'), \
+             patch('py_github_analyzer.cli.print_analysis_info'), \
+             patch('py_github_analyzer.cli.analyze_repository_async', 
+                   side_effect=KeyboardInterrupt()), \
+             patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+            
+            mock_parser_instance = MagicMock()
+            mock_parser_instance.parse_args.return_value = mock_args
+            mock_parser.return_value = mock_parser_instance
+            
+            mock_logger = MagicMock()
+            mock_get_logger.return_value = mock_logger
+            
+            result = await async_main()
+            
+            assert result == 130  # Standard keyboard interrupt exit code
+            mock_logger.warning.assert_any_call("Analysis interrupted by user")
+
+
+@pytest.mark.unit
+class TestMainFunction:
+    """Test main entry point function"""
+
+    def test_main_success(self):
+        """Test successful main function execution"""
+        with patch('py_github_analyzer.cli.asyncio.run', return_value=0) as mock_run, \
+             patch('sys.exit') as mock_exit:
+            
+            main()
+            
+            mock_run.assert_called_once()
+            mock_exit.assert_called_once_with(0)
+
+    def test_main_keyboard_interrupt(self):
+        """Test main function with keyboard interrupt"""
+        with patch('py_github_analyzer.cli.asyncio.run', side_effect=KeyboardInterrupt), \
+             patch('sys.exit') as mock_exit:
+            
+            main()
+            
+            mock_exit.assert_called_once_with(130)
+
+    def test_main_exception(self):
+        """Test main function with general exception"""
+        with patch('py_github_analyzer.cli.asyncio.run', 
+                   side_effect=Exception("Test error")), \
+             patch('sys.exit') as mock_exit:
+            
+            main()
+            
+            mock_exit.assert_called_once_with(1)
+
+    @patch('py_github_analyzer.cli.sys.platform', 'win32')
+    def test_main_windows_event_loop_policy(self):
+        """Test Windows-specific event loop policy setup"""
+        with patch('py_github_analyzer.cli.asyncio.set_event_loop_policy') as mock_policy, \
+             patch('py_github_analyzer.cli.asyncio.run', return_value=0), \
+             patch('sys.exit'):
+            
+            main()
+            
+            # Should set Windows-specific policy
+            mock_policy.assert_called_once()
+            call_args = mock_policy.call_args[0][0]
+            assert 'WindowsProactor' in str(type(call_args))
 
 
 @pytest.mark.integration
-class TestCLIRealWorld:
-    """Real-world scenario tests"""
+class TestCLIIntegration:
+    """Integration tests for CLI functionality"""
 
-    def test_cli_workflow_simulation(self):
-        """Test a realistic CLI workflow"""
+    def test_argument_parser_integration(self):
+        """Test complete argument parsing integration"""
         parser = create_argument_parser()
+        
+        # Test comprehensive argument parsing
+        test_cases = [
+            # Basic usage
+            (['https://github.com/test/repo'], {
+                'url': 'https://github.com/test/repo',
+                'verbose': False,
+                'dry_run': False
+            }),
+            # Full options
+            (['https://github.com/test/repo', '-o', './out', '-f', 'json', 
+              '-t', 'token', '-m', 'api', '-v', '--dry-run'], {
+                'url': 'https://github.com/test/repo',
+                'output': './out',
+                'format': 'json',
+                'github_token': 'token',
+                'method': 'api',
+                'verbose': True,
+                'dry_run': True
+            }),
+            # Check env only
+            (['--check-env'], {
+                'check_env': True,
+                'url': None
+            })
+        ]
+        
+        for args_list, expected in test_cases:
+            args = parser.parse_args(args_list)
+            for key, value in expected.items():
+                assert getattr(args, key) == value
 
-        # Simulate user running analysis command
-        args = parser.parse_args([
-            "owner/repo",
-            "--output", "./test_output",
-            "--format", "json",
-            "--verbose"
-        ])
+    def test_check_env_status_import_error(self):
+        """Test env status check with import error"""
+        with patch('py_github_analyzer.cli.TOKEN_UTILS_AVAILABLE', False):
+            result = check_env_status()
+            # 실제로는 토큰이 없어도 환경 체크는 성공하므로 True
+            assert result is True
 
-        assert args.url == "owner/repo"
-        assert args.output == "./test_output"
-        assert args.format == "json"
-        assert args.verbose is True
-        assert args.method == "auto"  # Default
-
-    def test_environment_variable_handling(self, monkeypatch):
-        """Test environment variable integration - WARNING-FREE VERSION"""
-        # Set environment variable
-        monkeypatch.setenv("GITHUB_TOKEN", "test_env_token")
+    @pytest.mark.asyncio
+    async def test_full_cli_workflow_mock(self):
+        """Test complete CLI workflow with mocks"""
+        mock_result = {
+            'success': True,
+            'metadata': {
+                'repo': 'test/repo',
+                'lang': ['Python'],
+                'size': '1KB'
+            },
+            'files': [{'path': 'main.py', 'lines': 10}],
+            'output_paths': {'json': './output.json'}
+        }
         
-        # Create args without explicit token
-        parser = create_argument_parser()
-        args = parser.parse_args(["owner/repo"])
+        test_args = [
+            'py-github-analyzer',
+            'https://github.com/test/repo',
+            '--output', './test_output',
+            '--format', 'json',
+            '--verbose'
+        ]
         
-        assert args.github_token is None  # Not set via args
-        
-        # Verify environment variable was set
-        import os
-        assert os.getenv("GITHUB_TOKEN") == "test_env_token"
-        
-        # Test TokenUtils availability without triggering async operations
-        if TOKEN_UTILS_AVAILABLE:
-            # CORRECTED: Mock the TokenUtils to avoid async calls
-            with patch('py_github_analyzer.utils.TokenUtils.get_github_token', return_value="test_env_token") as mock_get_token:
-                from py_github_analyzer.utils import TokenUtils
-                token = TokenUtils.get_github_token()
-                assert token == "test_env_token"
-                mock_get_token.assert_called_once()
+        with patch('sys.argv', test_args), \
+             patch('py_github_analyzer.cli.analyze_repository_async', 
+                   return_value=mock_result) as mock_analyze, \
+             patch('py_github_analyzer.cli.print_banner') as mock_banner, \
+             patch('py_github_analyzer.cli.get_logger') as mock_logger:
+            
+            mock_logger.return_value = MagicMock()
+            
+            result = await async_main()
+            
+            # Verify workflow
+            assert result == 0
+            mock_banner.assert_called_once()
+            mock_analyze.assert_called_once()
+            
+            # Verify analyze call arguments
+            call_kwargs = mock_analyze.call_args.kwargs
+            assert call_kwargs['repo_url'] == 'https://github.com/test/repo'
+            assert call_kwargs['output_dir'] == './test_output'
+            assert call_kwargs['output_format'] == 'json'
+            assert call_kwargs['verbose'] is True

@@ -1,9 +1,7 @@
+#!/usr/bin/env python3
 """
-
 Async GitHub Client for py-github-analyzer v1.0.0
-
 High-performance asynchronous GitHub API interaction with optimized access flow
-
 """
 
 import asyncio
@@ -15,7 +13,6 @@ from urllib.parse import quote
 
 try:
     import httpx
-
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
@@ -48,7 +45,7 @@ class AsyncRateLimitManager:
         self.remaining = self.limit
         self.reset_time = int(time.time()) + 3600
         self._lock = asyncio.Lock()
-        self._api_call_lock = asyncio.Lock()  # 전체 API 호출 과정을 보호하는 락
+        self._api_call_lock = asyncio.Lock()  # Lock to protect the entire API call process
 
     async def update_from_headers(self, headers: Dict[str, str]):
         """Update rate limit info from response headers"""
@@ -133,20 +130,25 @@ class AsyncGitHubSession:
         self.token = token
         self.timeout = timeout
 
-        # Setup HTTP headers for GitHub API
+        # Setup HTTP headers for GitHub API with token optimization
         headers = {
             "Accept": "application/vnd.github.v3+json",
             "User-Agent": "py-github-analyzer/1.0.0",
         }
 
         if self.token:
-            headers["Authorization"] = f"token {self.token}"
+            # Token optimization: Use appropriate authentication method based on token type
+            if self.token.startswith('github_pat_'):
+                # Fine-grained Token: Use Bearer authentication (optimal for github_pat_*)
+                headers["Authorization"] = f"Bearer {self.token}"
+            else:
+                # Classic Token (ghp_*): Use token authentication (standard for classic tokens)
+                headers["Authorization"] = f"token {self.token}"
 
         # Create httpx client with enhanced connection pooling
         limits = httpx.Limits(
             max_keepalive_connections=50, max_connections=200, keepalive_expiry=30
         )
-
         timeout_config = httpx.Timeout(timeout)
         self.client = httpx.AsyncClient(
             headers=headers,
@@ -154,6 +156,21 @@ class AsyncGitHubSession:
             limits=limits,
             follow_redirects=True,
         )
+
+    def _get_token_performance_profile(self) -> Dict[str, Any]:
+        """Get token-specific performance profile for optimized processing"""
+        if not self.token:
+            return {'batch_size': 3, 'delay': 1.0, 'performance': 'limited'}
+        
+        if self.token.startswith('github_pat_'):
+            # Fine-grained Token: Moderate performance settings based on real analysis
+            return {'batch_size': 4, 'delay': 0.8, 'performance': 'moderate'}
+        elif self.token.startswith('ghp_'):
+            # Classic Token: Fast performance settings based on real analysis
+            return {'batch_size': 10, 'delay': 0.1, 'performance': 'fast'}
+        else:
+            # Unknown token format: Conservative defaults
+            return {'batch_size': 3, 'delay': 1.0, 'performance': 'unknown'}
 
     async def request(
         self, method: str, url: str, raise_on_error: bool = True, **kwargs
@@ -170,7 +187,6 @@ class AsyncGitHubSession:
                         error_data = response.json()
                 except:
                     pass
-
                 error = handle_github_api_error(response.status_code, error_data, url)
                 raise error
 
@@ -211,19 +227,37 @@ class AsyncGitHubClient:
         self.token = token
         self.logger = logger or AnalyzerLogger()
         self.rate_limit_manager = AsyncRateLimitManager(token)
-        self.session = None
-        self._semaphore = None
 
-    async def __aenter__(self):
+        # Initialize session immediately in __init__
         self.session = AsyncGitHubSession(self.token)
+
         # Enhanced concurrency limits based on token availability
         max_concurrent = 100 if self.token else 20
         self._semaphore = asyncio.Semaphore(max_concurrent)
+
+    def _get_token_performance_profile(self) -> Dict[str, Any]:
+        """Get token-specific performance profile for batch operations"""
+        return self.session._get_token_performance_profile()
+
+    async def __aenter__(self):
+        # Session is already initialized when entering context manager
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         if self.session:
             await self.session.close()
+
+    def __del__(self):
+        """Cleanup method when object is destroyed"""
+        if hasattr(self, 'session') and self.session:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            except:
+                # If we can't close gracefully, that's okay
+                pass
 
     async def get_repository_info(
         self, owner: str, repo: str, safe_mode: bool = False
@@ -235,7 +269,6 @@ class AsyncGitHubClient:
             if safe_mode:
                 # Safe mode: faster but still track rate limit usage
                 response = await self.session.get(url, raise_on_error=False)
-
                 # Track the API call even in safe mode to maintain accurate rate limit info
                 await self.rate_limit_manager.track_safe_api_call(response)
 
@@ -277,7 +310,6 @@ class AsyncGitHubClient:
                 "clone_url": repo_data.get("clone_url"),
                 "html_url": repo_data.get("html_url"),
             }
-
         except Exception as e:
             if safe_mode:
                 self.logger.debug(f"Safe mode: Failed to get repository info: {e}")
@@ -293,631 +325,474 @@ class AsyncGitHubClient:
             else:
                 raise
 
-    async def detect_default_branch(self, owner: str, repo: str) -> str:
-        """Detect the default branch by testing ZIP availability"""
-        # Test common branch names concurrently
-        tasks = []
-        for branch in Config.DEFAULT_BRANCH_PRIORITY:
-            tasks.append(self._test_zip_availability(owner, repo, branch))
-
-        # Run all tests concurrently
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        for i, result in enumerate(results):
-            if result is True:  # ZIP test successful
-                branch = Config.DEFAULT_BRANCH_PRIORITY[i]
-                self.logger.debug(
-                    f"Detected default branch via concurrent ZIP test: {branch}"
-                )
-                return branch
-
-        self.logger.debug("Could not detect branch via ZIP, using 'main'")
-        return "main"
-
-    async def _test_zip_availability(self, owner: str, repo: str, branch: str) -> bool:
-        """Test if ZIP download is available for given branch"""
-        zip_url = URLParser.build_zip_url(owner, repo, branch)
-        try:
-            response = await self.session.get(zip_url, raise_on_error=False, timeout=10)
-            return response.status_code in [200, 302]
-        except:
-            return False
-
-    async def download_repository_zip(
-        self, owner: str, repo: str, branch: str = None
+    async def get_repository_contents(
+        self,
+        owner: str,
+        repo: str,
+        path: str = "",
+        branch: str = None,
+        recursive: bool = True,
+        safe_mode: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Download repository as ZIP with async streaming"""
-        if not branch:
-            branch = await self.detect_default_branch(owner, repo)
-
-        zip_url = URLParser.build_zip_url(owner, repo, branch)
-
-        try:
-            self.logger.debug(f"Downloading ZIP from: {zip_url}")
-
-            async with self.session.client.stream("GET", zip_url) as response:
-                # Handle different response codes
-                if response.status_code == 404:
-                    # Try alternative branches concurrently
-                    alternative_branches = ["main", "master", "develop", "dev"]
-                    if branch in alternative_branches:
-                        alternative_branches.remove(branch)
-
-                    # Test all alternatives concurrently
-                    tasks = [
-                        self._try_alternative_zip(owner, repo, alt_branch)
-                        for alt_branch in alternative_branches
-                    ]
-
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-                    for i, result in enumerate(results):
-                        if isinstance(result, tuple):  # Success: (content, branch)
-                            content, successful_branch = result
-                            self.logger.debug(
-                                f"Found repository with branch: {successful_branch}"
-                            )
-                            return await self._extract_zip_contents_async(
-                                content, f"{repo}-{successful_branch}"
-                            )
-
-                    # All branches failed
-                    raise PrivateRepositoryError(
-                        f"Repository ZIP not accessible - likely private repository",
-                        f"https://github.com/{owner}/{repo}",
-                    )
-
-                elif response.status_code == 403:
-                    raise PrivateRepositoryError(
-                        f"Repository access forbidden - private repository",
-                        f"https://github.com/{owner}/{repo}",
-                    )
-
-                elif not response.is_success:
-                    raise NetworkError(
-                        f"Failed to download ZIP: HTTP {response.status_code}"
-                    )
-
-                # Check content length for size limits
-                content_length = response.headers.get("content-length")
-                if content_length:
-                    size_mb = int(content_length) / (1024 * 1024)
-                    if size_mb > Config.MAX_TOTAL_SIZE_MB * 2:
-                        raise RepositoryTooLargeError(
-                            f"Repository ZIP too large: {size_mb:.1f}MB",
-                            size_mb,
-                            Config.MAX_TOTAL_SIZE_MB * 2,
-                        )
-
-                # Download content with async streaming and size monitoring
-                content = b""
-                downloaded = 0
-                chunk_size = 8192
-                max_size_bytes = (
-                    Config.MAX_TOTAL_SIZE_MB * 2 * 1024 * 1024
-                )  # Convert to bytes
-
-                async for chunk in response.aiter_bytes(chunk_size):
-                    content += chunk
-                    downloaded += len(chunk)
-
-                    # Safety check: Monitor downloaded size even without content-length header
-                    if downloaded > max_size_bytes:
-                        raise RepositoryTooLargeError(
-                            f"Repository ZIP download exceeded size limit: {downloaded / (1024*1024):.1f}MB",
-                            downloaded / (1024 * 1024),
-                            Config.MAX_TOTAL_SIZE_MB * 2,
-                        )
-
-                    # Log progress for large downloads
-                    if content_length:
-                        progress = (downloaded / int(content_length)) * 100
-                        if downloaded % (chunk_size * 100) == 0:
-                            self.logger.debug(f"Download progress: {progress:.1f}%")
-
-                return await self._extract_zip_contents_async(
-                    content, f"{repo}-{branch}"
-                )
-
-        except (PrivateRepositoryError, RepositoryTooLargeError):
-            raise
-        except httpx.TimeoutException:
-            raise AnalyzerTimeoutError(
-                f"ZIP download timeout after {Config.TIMEOUT_CONFIG['zip_timeout']} seconds",
-                Config.TIMEOUT_CONFIG["zip_timeout"],
-            )
-        except Exception as e:
-            self.logger.debug(f"ZIP download failed: {e}")
-            raise NetworkError(f"ZIP download failed: {e}")
-
-    async def _try_alternative_zip(
-        self, owner: str, repo: str, branch: str
-    ) -> Optional[Tuple[bytes, str]]:
-        """Try downloading ZIP for alternative branch"""
-        try:
-            zip_url = URLParser.build_zip_url(owner, repo, branch)
-            async with self.session.client.stream("GET", zip_url) as response:
-                if response.is_success:
-                    content = b""
-                    async for chunk in response.aiter_bytes(8192):
-                        content += chunk
-                    return content, branch
-            return None
-        except:
-            return None
-
-    async def _extract_zip_contents_async(
-        self, zip_content: bytes, expected_prefix: str
-    ) -> List[Dict[str, Any]]:
-        """Extract file information from ZIP content asynchronously"""
-        # Run CPU-intensive ZIP extraction in thread pool
-        loop = asyncio.get_event_loop()
-        files = await loop.run_in_executor(
-            None, self._extract_zip_contents_sync, zip_content, expected_prefix
-        )
-        return files
-
-    def _extract_zip_contents_sync(
-        self, zip_content: bytes, expected_prefix: str
-    ) -> List[Dict[str, Any]]:
-        """Synchronous ZIP extraction with safe path handling (runs in thread pool)"""
-        files = []
-
-        try:
-            with zipfile.ZipFile(BytesIO(zip_content)) as zip_file:
-                # Step 1: Identify the actual root directory structure
-                all_paths = [
-                    info.filename for info in zip_file.infolist() if not info.is_dir()
-                ]
-                if not all_paths:
-                    return files
-
-                # Find the common root directory by analyzing all file paths
-                root_dirs = set()
-                for path in all_paths:
-                    if "/" in path:
-                        root_dirs.add(path.split("/")[0])
-                    else:
-                        # File at root level - no common directory
-                        root_dirs = set()
-                        break
-
-                # Determine the actual repository prefix
-                if len(root_dirs) == 1:
-                    # All files share a common root directory
-                    actual_repo_prefix = list(root_dirs)[0]
-                    self.logger.debug(
-                        f"Detected actual repository prefix: '{actual_repo_prefix}'"
-                    )
-                else:
-                    # Files don't share a common root or are at root level
-                    actual_repo_prefix = None
-                    self.logger.debug("No common repository prefix detected")
-
-                # Step 2: Process files with safe path handling
-                for zip_info in zip_file.infolist():
-                    if zip_info.is_dir():
-                        continue
-
-                    original_path = zip_info.filename
-
-                    # Safe path normalization
-                    if actual_repo_prefix and original_path.startswith(
-                        f"{actual_repo_prefix}/"
-                    ):
-                        # Remove the confirmed repository prefix
-                        file_path = original_path[len(f"{actual_repo_prefix}/") :]
-                    elif actual_repo_prefix and original_path == actual_repo_prefix:
-                        # Skip if it's just the root directory
-                        continue
-                    else:
-                        # Keep the original path if no common prefix or doesn't match
-                        file_path = original_path
-
-                    # Skip empty paths
-                    if not file_path or file_path == "/":
-                        continue
-
-                    # Skip excluded directories
-                    if any(
-                        Config.is_excluded_directory(part)
-                        for part in file_path.split("/")
-                    ):
-                        continue
-
-                    # Skip binary files
-                    if Config.is_binary_file(file_path):
-                        continue
-
-                    try:
-                        with zip_file.open(zip_info) as file:
-                            content = file.read()
-
-                            if len(content) > Config.MAX_FILE_SIZE_BYTES:
-                                continue
-
-                            # Try to decode as text
-                            try:
-                                text_content = content.decode("utf-8")
-                            except UnicodeDecodeError:
-                                try:
-                                    text_content = content.decode("latin-1")
-                                except UnicodeDecodeError:
-                                    continue
-
-                            files.append(
-                                {
-                                    "path": file_path,
-                                    "size": len(content),
-                                    "content": text_content,
-                                    "priority": Config.get_file_priority(file_path),
-                                }
-                            )
-
-                    except Exception:
-                        continue
-
-            return files
-
-        except zipfile.BadZipFile as e:
-            raise NetworkError(f"Invalid ZIP file: {e}")
-        except Exception as e:
-            raise NetworkError(f"ZIP extraction failed: {e}")
-
-    async def get_repository_tree_api(
-        self, owner: str, repo: str, branch: str = None
-    ) -> List[Dict[str, Any]]:
-        """Get repository file tree using GitHub API with atomic rate limit management"""
-        if not branch:
-            branch = "main"
-
-        url = URLParser.build_api_url(owner, repo, f"git/trees/{branch}?recursive=1")
-
-        try:
-            async with self._semaphore:
-                # Use atomic API call execution
-                response = await self.rate_limit_manager.execute_api_call(
-                    lambda: self.session.get(url)
-                )
-
-            tree_data = response.json()
-            files = []
-
-            for item in tree_data.get("tree", []):
-                if item["type"] == "blob":
-                    files.append(
-                        {
-                            "path": item["path"],
-                            "size": item.get("size", 0),
-                            "sha": item["sha"],
-                            "url": item.get("url", ""),
-                            "download_url": f"https://raw.githubusercontent.com/{owner}/{repo}/{branch}/{quote(item['path'])}",
-                        }
-                    )
-
-            self.logger.debug(f"Retrieved {len(files)} files via API")
-            return files
-
-        except Exception as e:
-            self.logger.error(f"Failed to get repository tree via API: {e}")
-            raise
-
-    async def download_single_file(
-        self, file_info: Dict[str, Any]
-    ) -> Optional[Dict[str, Any]]:
-        """Download a single file asynchronously with atomic rate limit management"""
+        """Get repository contents via GitHub Contents API with recursive support"""
         async with self._semaphore:
+            all_contents = []
+
+            # Build initial API URL
+            url = URLParser.build_api_url(owner, repo, "contents")
+            if path:
+                url += f"/{path.strip('/')}"
+            if branch:
+                url += f"?ref={branch}"
+
             try:
-                # Use atomic API call execution to prevent race conditions
-                response = await self.rate_limit_manager.execute_api_call(
-                    lambda: self.session.get(
-                        file_info["download_url"],
-                        timeout=Config.TIMEOUT_CONFIG["http_timeout"],
+                if safe_mode:
+                    response = await self.session.get(url, raise_on_error=False)
+                    await self.rate_limit_manager.track_safe_api_call(response)
+                    if not response.is_success:
+                        return []
+                else:
+                    response = await self.rate_limit_manager.execute_api_call(
+                        lambda: self.session.get(url)
                     )
-                )
 
-                content = response.content
-                if len(content) > Config.MAX_FILE_SIZE_BYTES:
-                    return None
+                contents = response.json()
 
-                # Try to decode as text
-                try:
-                    text_content = content.decode("utf-8")
-                except UnicodeDecodeError:
-                    try:
-                        text_content = content.decode("latin-1")
-                    except UnicodeDecodeError:
+                # Handle single file response
+                if isinstance(contents, dict):
+                    contents = [contents]
+
+                for item in contents:
+                    all_contents.append({
+                        "name": item["name"],
+                        "path": item["path"],
+                        "type": item["type"],
+                        "size": item.get("size", 0),
+                        "download_url": item.get("download_url"),
+                        "git_url": item.get("git_url"),
+                        "html_url": item.get("html_url"),
+                        "sha": item.get("sha"),
+                    })
+
+                    # Recursively get subdirectory contents
+                    if recursive and item["type"] == "dir":
+                        try:
+                            subcontents = await self.get_repository_contents(
+                                owner, repo, item["path"], branch, recursive, safe_mode
+                            )
+                            all_contents.extend(subcontents)
+                        except Exception as e:
+                            self.logger.debug(f"Failed to get contents for {item['path']}: {e}")
+                            continue
+
+                return all_contents
+
+            except Exception as e:
+                if safe_mode:
+                    self.logger.debug(f"Safe mode: Failed to get contents: {e}")
+                    return []
+                else:
+                    raise
+
+    async def get_file_content(
+        self, owner: str, repo: str, file_path: str, branch: str = None, safe_mode: bool = False
+    ) -> Optional[Dict[str, Any]]:
+        """Get individual file content with enhanced error handling"""
+        async with self._semaphore:
+            url = URLParser.build_api_url(owner, repo, f"contents/{file_path}")
+            if branch:
+                url += f"?ref={branch}"
+
+            try:
+                if safe_mode:
+                    response = await self.session.get(url, raise_on_error=False)
+                    await self.rate_limit_manager.track_safe_api_call(response)
+                    if not response.is_success:
                         return None
+                else:
+                    response = await self.rate_limit_manager.execute_api_call(
+                        lambda: self.session.get(url)
+                    )
 
+                file_data = response.json()
                 return {
-                    "path": file_info["path"],
-                    "size": len(content),
-                    "content": text_content,
-                    "priority": file_info.get(
-                        "priority", Config.get_file_priority(file_info["path"])
-                    ),
+                    "name": file_data["name"],
+                    "path": file_data["path"],
+                    "content": file_data.get("content", ""),
+                    "encoding": file_data.get("encoding", "base64"),
+                    "size": file_data.get("size", 0),
+                    "sha": file_data.get("sha"),
+                    "download_url": file_data.get("download_url"),
                 }
 
             except Exception as e:
-                self.logger.debug(f"Failed to download {file_info['path']}: {e}")
-                return None
+                if safe_mode:
+                    self.logger.debug(f"Safe mode: Failed to get file content for {file_path}: {e}")
+                    return None
+                else:
+                    raise
 
-    async def download_files_concurrently(
-        self, files: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Enhanced concurrent file downloads with batching"""
-        if not files:
-            return []
+    async def batch_download_files(
+        self,
+        owner: str,
+        repo: str,
+        file_paths: List[str],
+        branch: str = None,
+        batch_size: int = None,
+        safe_mode: bool = False,
+    ) -> Dict[str, Optional[Dict[str, Any]]]:
+        """Download multiple files in parallel batches with token-optimized performance"""
+        if not file_paths:
+            return {}
 
-        self.logger.debug(f"Starting enhanced async download of {len(files)} files")
+        # Get token-specific performance profile for optimized batch processing
+        token_profile = self._get_token_performance_profile()
+        effective_batch_size = batch_size or token_profile['batch_size']
+        delay_between_batches = token_profile['delay']
 
-        # Process files in batches to manage memory and connections
-        batch_size = 50 if self.token else 20
-        completed_files = []
+        results = {}
+        start_time = time.time()
 
-        for i in range(0, len(files), batch_size):
-            batch = files[i : i + batch_size]
+        # Log performance optimization info for large batches
+        if len(file_paths) > 20:
+            self.logger.info(
+                f"Token-optimized batch download: {len(file_paths)} files, "
+                f"batch_size={effective_batch_size}, delay={delay_between_batches}s "
+                f"({token_profile['performance']} mode)"
+            )
 
+        # Process files in optimized batches
+        for i in range(0, len(file_paths), effective_batch_size):
+            batch = file_paths[i:i + effective_batch_size]
+            
             # Create download tasks for this batch
-            tasks = [
-                asyncio.create_task(self.download_single_file(file_info))
-                for file_info in batch
-            ]
+            tasks = []
+            for file_path in batch:
+                task = asyncio.create_task(
+                    self._download_single_file_with_retry(
+                        owner, repo, file_path, branch, safe_mode
+                    )
+                )
+                tasks.append(task)
 
             # Execute batch concurrently
-            batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                batch_results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                for file_path, result in zip(batch, batch_results):
+                    if isinstance(result, Exception):
+                        self.logger.debug(f"Failed to download {file_path}: {result}")
+                        results[file_path] = None
+                    else:
+                        results[file_path] = result
 
-            # Process batch results
-            for j, result in enumerate(batch_results):
-                if isinstance(result, dict) and result:
-                    completed_files.append(result)
-                elif isinstance(result, Exception):
-                    self.logger.debug(f"Download task failed: {result}")
+            except Exception as e:
+                self.logger.debug(f"Batch download failed: {e}")
+                # Mark all files in failed batch as None
+                for file_path in batch:
+                    results[file_path] = None
 
-            self.logger.debug(
-                f"Completed batch {i//batch_size + 1}/{(len(files) + batch_size - 1)//batch_size}"
+            # Token-specific delay between batches to optimize API usage
+            if i + effective_batch_size < len(file_paths) and delay_between_batches > 0:
+                await asyncio.sleep(delay_between_batches)
+
+        # Performance summary
+        elapsed_time = time.time() - start_time
+        successful_downloads = sum(1 for v in results.values() if v is not None)
+        
+        if len(file_paths) > 10:
+            self.logger.info(
+                f"Batch download completed: {successful_downloads}/{len(file_paths)} files "
+                f"in {elapsed_time:.2f}s ({token_profile['performance']} performance)"
             )
 
-        self.logger.debug(
-            f"Enhanced async download completed: {len(completed_files)} successful files"
-        )
-        return completed_files
+        return results
 
-    async def _try_api_method(
-        self, owner: str, repo: str
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """Try API method for private repository access"""
-        self.logger.info("Attempting private repository access via async API...")
+    async def _download_single_file_with_retry(
+        self,
+        owner: str,
+        repo: str,
+        file_path: str,
+        branch: str = None,
+        safe_mode: bool = False,
+        max_retries: int = 2
+    ) -> Optional[Dict[str, Any]]:
+        """Download single file with exponential backoff retry"""
+        
+        for attempt in range(max_retries + 1):
+            try:
+                # Get file content using existing method
+                file_data = await self.get_file_content(owner, repo, file_path, branch, safe_mode)
+                
+                if file_data and file_data.get("content") and file_data.get("encoding") == "base64":
+                    # Decode base64 content
+                    import base64
+                    try:
+                        decoded_content = base64.b64decode(file_data["content"]).decode("utf-8")
+                        return {
+                            "path": file_path,
+                            "content": decoded_content,
+                            "size": len(decoded_content),
+                            "sha": file_data.get("sha"),
+                            "encoding": "utf-8",
+                        }
+                    except (UnicodeDecodeError, base64.binascii.Error):
+                        # Try latin-1 encoding for non-UTF-8 files
+                        try:
+                            decoded_content = base64.b64decode(file_data["content"]).decode("latin-1")
+                            return {
+                                "path": file_path,
+                                "content": decoded_content,
+                                "size": len(decoded_content),
+                                "sha": file_data.get("sha"),
+                                "encoding": "latin-1",
+                            }
+                        except:
+                            # Skip binary or unreadable files
+                            return None
+                elif file_data:
+                    # File exists but couldn't decode content
+                    return {
+                        "path": file_path,
+                        "content": "",
+                        "size": 0,
+                        "sha": file_data.get("sha"),
+                        "encoding": "unknown",
+                    }
+                else:
+                    return None
+                    
+            except Exception as e:
+                if attempt < max_retries:
+                    # Exponential backoff
+                    wait_time = (2 ** attempt) * 0.5
+                    await asyncio.sleep(wait_time)
+                    self.logger.debug(f"Retrying {file_path} (attempt {attempt + 2}): {e}")
+                else:
+                    self.logger.debug(f"Final failure for {file_path}: {e}")
+                    return None
+        
+        return None
+
+    async def download_zip_archive(
+        self, owner: str, repo: str, branch: str = "main", safe_mode: bool = False
+    ) -> Optional[Dict[str, str]]:
+        """Download repository as ZIP archive with enhanced error handling"""
+        zip_url = f"https://api.github.com/repos/{owner}/{repo}/zipball/{branch}"
 
         try:
-            repo_info = await self.get_repository_info(owner, repo, safe_mode=False)
-
-            # Check if we have enough rate limit for tree API call
-            if not await self.rate_limit_manager.check_rate_limit(10):
-                raise RateLimitExceededError(
-                    "API rate limit approaching. Please retry later or use ZIP method.",
-                    reset_time=self.rate_limit_manager.reset_time,
-                    remaining=self.rate_limit_manager.remaining,
+            if safe_mode:
+                response = await self.session.get(zip_url, raise_on_error=False)
+                await self.rate_limit_manager.track_safe_api_call(response)
+                if not response.is_success:
+                    return None
+            else:
+                response = await self.rate_limit_manager.execute_api_call(
+                    lambda: self.session.get(zip_url)
                 )
 
-            tree_files = await self.get_repository_tree_api(
-                owner, repo, repo_info.get("default_branch")
-            )
-            filtered_files = self._filter_and_prioritize_files(tree_files)
-            files = await self.download_files_concurrently(filtered_files)
+            if response.status_code != 200:
+                return None
 
-            return files, repo_info
+            return self._extract_zip_files(response.content)
 
-        except RateLimitExceededError:
-            raise
-        except (AuthenticationError, RepositoryNotFoundError):
-            raise
         except Exception as e:
-            raise AuthenticationError(f"Async API access failed: {e}")
+            if safe_mode:
+                self.logger.debug(f"Safe mode: ZIP download failed: {e}")
+                return None
+            else:
+                raise
 
-    def _should_try_api_fallback(self, error: Exception) -> bool:
-        """Determine if API fallback should be attempted for given error"""
-        # Expanded fallback conditions: not just PrivateRepositoryError
-        fallback_exceptions = (
-            PrivateRepositoryError,
-            NetworkError,
-            AnalyzerTimeoutError,
-            RepositoryTooLargeError,  # ZIP too large might work with selective API download
-        )
+    def _extract_zip_files(self, zip_data: bytes) -> Dict[str, str]:
+        """Extract files from ZIP archive with enhanced encoding handling"""
+        files = {}
 
-        # Don't fallback for certain permanent errors
-        no_fallback_exceptions = (
-            AuthenticationError,
-            RateLimitExceededError,
-            RepositoryNotFoundError,
-        )
-
-        # Check if error is a fallback candidate
-        if isinstance(error, fallback_exceptions):
-            return True
-
-        # Don't fallback for permanent errors
-        if isinstance(error, no_fallback_exceptions):
-            return False
-
-        # For generic exceptions, check if they might be transient
-        error_message = str(error).lower()
-        transient_indicators = [
-            "timeout",
-            "connection",
-            "network",
-            "temporary",
-            "rate limit",
-            "server error",
-            "service unavailable",
-        ]
-
-        return any(indicator in error_message for indicator in transient_indicators)
-
-    async def analyze_repository(
-        self, owner: str, repo: str, method: str = "auto"
-    ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
-        """
-        Optimized async analysis: ZIP first, then enhanced token-aware fallback strategy
-
-        Args:
-            owner: Repository owner username
-            repo: Repository name
-            method: Analysis method ('auto', 'zip', 'api')
-
-        Returns:
-            Tuple of (files, repo_info)
-        """
-        self.logger.debug(
-            f"Starting async analysis: {owner}/{repo} (token: {'available' if self.token else 'not available'})"
-        )
-
-        zip_error = None
-
-        # Step 1: Always try ZIP download first (async)
         try:
-            self.logger.debug("Attempting async ZIP download...")
-            files = await self.download_repository_zip(owner, repo)
-            repo_info = await self.get_repository_info(owner, repo, safe_mode=True)
-            self.logger.info(f"Async ZIP download successful! ({len(files)} files)")
-            return files, repo_info
+            with zipfile.ZipFile(BytesIO(zip_data), "r") as zip_file:
+                for file_info in zip_file.filelist:
+                    if file_info.is_dir():
+                        continue
 
+                    file_path = file_info.filename
+                    if "/" in file_path:
+                        file_path = "/".join(file_path.split("/")[1:])
+
+                    if not file_path:
+                        continue
+
+                    try:
+                        file_content = zip_file.read(file_info.filename)
+
+                        try:
+                            decoded_content = file_content.decode("utf-8")
+                        except UnicodeDecodeError:
+                            try:
+                                decoded_content = file_content.decode("latin-1")
+                            except:
+                                continue
+
+                        files[file_path] = decoded_content
+
+                    except Exception as e:
+                        self.logger.debug(f"Failed to extract {file_path}: {e}")
+                        continue
+
+        except zipfile.BadZipFile:
+            self.logger.error("Invalid ZIP file received")
+            return {}
         except Exception as e:
-            zip_error = e
-            self.logger.debug(f"ZIP download failed: {type(e).__name__}: {e}")
+            self.logger.error(f"ZIP extraction failed: {e}")
+            return {}
 
-        # Step 2: Enhanced fallback logic with token availability
-        if self.token and zip_error and self._should_try_api_fallback(zip_error):
-            self.logger.warning(
-                f"ZIP failed ({type(zip_error).__name__}), attempting API fallback..."
-            )
+        return files
 
-            try:
-                return await self._try_api_method(owner, repo)
-
-            except RateLimitExceededError as e:
-                reset_minutes = (
-                    (e.reset_time - int(time.time())) // 60 if e.reset_time else 0
-                )
-                self.logger.warning(
-                    f"API rate limit exceeded! Retry available in {reset_minutes} minutes."
-                )
-                self.logger.info(
-                    "Please wait for rate limit reset or try with a different token."
-                )
-                raise
-
-            except AuthenticationError as e:
-                self.logger.error(
-                    "Token permission insufficient or repository access denied"
-                )
-                self.logger.info(
-                    "Please verify that your token has 'repo' scope access."
-                )
-                raise
-
-            except Exception as api_error:
-                self.logger.warning(
-                    f"API fallback also failed: {type(api_error).__name__}: {api_error}"
-                )
-                # Re-raise the original ZIP error if API fallback fails
-                raise zip_error
-
-        # Step 3: Handle specific error cases
-        if isinstance(zip_error, PrivateRepositoryError):
-            if self.token:
-                # Token available but API fallback failed, re-raise the original error
-                raise zip_error
-            else:
-                self.logger.error("Private repository detected.")
-                self.logger.info("GitHub token required for private repository access.")
-                message = create_private_repo_guidance_message(
-                    owner, repo, has_token=False
-                )
-                raise PrivateRepositoryError(
-                    message, f"https://github.com/{owner}/{repo}"
-                )
-
-        elif isinstance(zip_error, RepositoryNotFoundError):
-            self.logger.error(f"Repository not found: {owner}/{repo}")
-            raise zip_error
-
-        elif isinstance(zip_error, NetworkError):
-            self.logger.error(f"Network error during repository access: {zip_error}")
-            raise zip_error
-
-        else:
-            # Generic error handling
-            self.logger.error(
-                f"Repository analysis failed: {type(zip_error).__name__}: {zip_error}"
-            )
-
-            # Try to get safe repository info for error response
-            try:
-                repo_info = await self.get_repository_info(owner, repo, safe_mode=True)
-            except:
-                repo_info = {
-                    "name": repo,
-                    "full_name": f"{owner}/{repo}",
-                    "description": "",
-                    "language": "Unknown",
-                    "size": 0,
-                    "default_branch": "main",
-                    "private": None,
-                }
-
-            return [], repo_info
-
-    def _filter_and_prioritize_files(
-        self, files: List[Dict[str, Any]]
-    ) -> List[Dict[str, Any]]:
-        """Filter and prioritize files for download"""
-        # Add priority to all files first
-        for file_info in files:
-            file_info["priority"] = Config.get_file_priority(file_info["path"])
-
-        filtered_files = []
-        for file_info in files:
-            path = file_info["path"]
-
-            # Skip excluded directories
-            if any(Config.is_excluded_directory(part) for part in path.split("/")):
-                continue
-
-            # Skip binary files
-            if Config.is_binary_file(path):
-                continue
-
-            # Skip files that are too large
-            if file_info.get("size", 0) > Config.MAX_FILE_SIZE_BYTES:
-                continue
-
-            filtered_files.append(file_info)
-
-        # Sort by priority (highest first)
-        filtered_files.sort(key=lambda x: x["priority"], reverse=True)
-
-        # Limit total size
-        total_size = 0
-        selected_files = []
-
-        for file_info in filtered_files:
-            file_size = file_info.get("size", 0)
-            if total_size + file_size <= Config.MAX_TOTAL_SIZE_BYTES:
-                selected_files.append(file_info)
-                total_size += file_size
-            else:
-                break
-
-        self.logger.debug(
-            f"Selected {len(selected_files)} files out of {len(files)} total"
-        )
-        return selected_files
-
-    async def get_rate_limit_info(self) -> Dict[str, Any]:
-        """Get current rate limit information"""
-        return {
-            "limit": self.rate_limit_manager.limit,
-            "remaining": self.rate_limit_manager.remaining,
-            "reset_time": self.rate_limit_manager.reset_time,
-            "reset_in_seconds": self.rate_limit_manager.wait_time_until_reset(),
+    async def search_repositories(
+        self,
+        query: str,
+        sort: str = "updated",
+        order: str = "desc",
+        per_page: int = 30,
+        page: int = 1,
+        safe_mode: bool = False,
+    ) -> Dict[str, Any]:
+        """Search repositories using GitHub Search API"""
+        url = "https://api.github.com/search/repositories"
+        params = {
+            "q": query,
+            "sort": sort,
+            "order": order,
+            "per_page": min(per_page, 100),
+            "page": page,
         }
+
+        try:
+            if safe_mode:
+                response = await self.session.get(url, params=params, raise_on_error=False)
+                await self.rate_limit_manager.track_safe_api_call(response)
+                if not response.is_success:
+                    return {"total_count": 0, "items": []}
+            else:
+                response = await self.rate_limit_manager.execute_api_call(
+                    lambda: self.session.get(url, params=params)
+                )
+
+            search_results = response.json()
+
+            return {
+                "total_count": search_results.get("total_count", 0),
+                "items": [
+                    {
+                        "name": repo["name"],
+                        "full_name": repo["full_name"],
+                        "description": repo.get("description", ""),
+                        "language": repo.get("language"),
+                        "stargazers_count": repo.get("stargazers_count", 0),
+                        "forks_count": repo.get("forks_count", 0),
+                        "updated_at": repo.get("updated_at"),
+                        "html_url": repo.get("html_url"),
+                        "clone_url": repo.get("clone_url"),
+                        "default_branch": repo.get("default_branch", "main"),
+                    }
+                    for repo in search_results.get("items", [])
+                ],
+            }
+
+        except Exception as e:
+            if safe_mode:
+                self.logger.debug(f"Safe mode: Repository search failed: {e}")
+                return {"total_count": 0, "items": []}
+            else:
+                raise
+
+    async def get_user_repositories(
+        self,
+        username: str,
+        type_filter: str = "all",
+        sort: str = "updated",
+        direction: str = "desc",
+        per_page: int = 30,
+        page: int = 1,
+        safe_mode: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Get user's repositories with enhanced pagination support"""
+        url = f"https://api.github.com/users/{username}/repos"
+        params = {
+            "type": type_filter,
+            "sort": sort,
+            "direction": direction,
+            "per_page": min(per_page, 100),
+            "page": page,
+        }
+
+        try:
+            if safe_mode:
+                response = await self.session.get(url, params=params, raise_on_error=False)
+                await self.rate_limit_manager.track_safe_api_call(response)
+                if not response.is_success:
+                    return []
+            else:
+                response = await self.rate_limit_manager.execute_api_call(
+                    lambda: self.session.get(url, params=params)
+                )
+
+            repositories = response.json()
+
+            return [
+                {
+                    "name": repo["name"],
+                    "full_name": repo["full_name"],
+                    "description": repo.get("description", ""),
+                    "language": repo.get("language"),
+                    "size": repo.get("size", 0),
+                    "stargazers_count": repo.get("stargazers_count", 0),
+                    "forks_count": repo.get("forks_count", 0),
+                    "created_at": repo.get("created_at"),
+                    "updated_at": repo.get("updated_at"),
+                    "html_url": repo.get("html_url"),
+                    "clone_url": repo.get("clone_url"),
+                    "default_branch": repo.get("default_branch", "main"),
+                    "private": repo.get("private", False),
+                    "archived": repo.get("archived", False),
+                }
+                for repo in repositories
+                if isinstance(repo, dict)
+            ]
+
+        except Exception as e:
+            if safe_mode:
+                self.logger.debug(f"Safe mode: Failed to get user repositories: {e}")
+                return []
+            else:
+                raise
+
+    async def get_rate_limit_status(self) -> Dict[str, Any]:
+        """Get current rate limit status"""
+        url = "https://api.github.com/rate_limit"
+
+        try:
+            response = await self.session.get(url, raise_on_error=False)
+            if response.is_success:
+                rate_data = response.json()
+                return {
+                    "core": {
+                        "limit": rate_data["resources"]["core"]["limit"],
+                        "remaining": rate_data["resources"]["core"]["remaining"],
+                        "reset": rate_data["resources"]["core"]["reset"],
+                    },
+                    "search": {
+                        "limit": rate_data["resources"]["search"]["limit"],
+                        "remaining": rate_data["resources"]["search"]["remaining"],
+                        "reset": rate_data["resources"]["search"]["reset"],
+                    },
+                    "rate": rate_data.get("rate", {}),
+                }
+            else:
+                return {"error": "Unable to fetch rate limit status"}
+
+        except Exception as e:
+            return {"error": f"Rate limit check failed: {e}"}
+
+    async def close(self):
+        """Close client and cleanup resources"""
+        if self.session:
+            await self.session.close()

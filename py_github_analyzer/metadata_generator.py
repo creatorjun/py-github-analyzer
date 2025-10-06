@@ -184,67 +184,76 @@ class MetadataGenerator:
             # Last resort: use URL as is
             return repo_url.replace("https://github.com/", "").replace(".git", "")
 
-    def _extract_description(
-        self, files: List[Dict[str, Any]], repo_info: Dict[str, Any]
-    ) -> str:
+    def _extract_description(self, files: List[Dict[str, Any]], repo_info: Dict[str, Any]) -> str:
         """Extract repository description from README or repo info"""
-        # Try repository description first
+        
+        # 🔧 FIX: Safe description extraction with None handling
         if isinstance(repo_info, dict):
-            repo_desc = repo_info.get("description", "").strip()
-            if repo_desc:
-                return repo_desc
-
-        # Look for README files
-        readme_patterns = ["readme", "readme.md", "readme.txt", "readme.rst"]
+            repo_desc = repo_info.get('description', '')
+            # 🔧 FIX: Ensure repo_desc is not None before calling strip()
+            if repo_desc and isinstance(repo_desc, str):
+                repo_desc = repo_desc.strip()
+                if repo_desc:  # Only return if non-empty after stripping
+                    return repo_desc
+        
+        # Look for README files...
+        readme_patterns = ['readme', 'readme.md', 'readme.txt', 'readme.rst']
         readme_files = []
-
+        
         if isinstance(files, list):
             for file_info in files:
                 if not isinstance(file_info, dict):
                     continue
-
-                path = file_info.get("path", "").lower()
-                filename = Path(path).name.lower()
-
-                if any(filename.startswith(pattern) for pattern in readme_patterns):
-                    readme_files.append(file_info)
-
+                path = file_info.get('path', '')
+                if not path:
+                    continue
+                    
+                # 🔧 FIX: Safe path handling
+                try:
+                    filename = Path(path).name.lower()
+                    if any(filename.startswith(pattern) for pattern in readme_patterns):
+                        readme_files.append(file_info)
+                except Exception:
+                    continue
+        
         if readme_files:
-            # If we found README files, use the first one
+            # If we found README files, use the first one...
             first_readme = readme_files[0]
             if isinstance(first_readme, dict):
-                readme_content = first_readme.get("content", "")
-                if readme_content:
-                    # Extract first meaningful paragraph
-                    lines = readme_content.strip().split("\n")
-                    description_lines = []
-
-                    for line in lines:
-                        line = line.strip()
-                        # Skip empty lines, titles starting with #, and horizontal rules
-                        if (
-                            not line
-                            or line.startswith("#")
-                            or line.startswith("---")
-                            or line.startswith("===")
-                        ):
-                            continue
-
-                        description_lines.append(line)
-
-                        # Stop after collecting enough content
-                        if len(" ".join(description_lines)) > 150:
-                            break
-
-                    if description_lines:
-                        description = " ".join(description_lines)
-                        # Truncate to reasonable length
-                        if len(description) > 200:
-                            description = description[:197] + "..."
-                        return description
-
-        # Fallback to generic description
+                readme_content = first_readme.get('content', '')
+                # 🔧 FIX: Ensure readme_content is not None before calling strip()
+                if readme_content and isinstance(readme_content, str):
+                    try:
+                        lines = readme_content.strip().split('\n')
+                        description_lines = []
+                        
+                        for line in lines:
+                            line = line.strip()
+                            
+                            # Skip empty lines, titles starting with '#', and horizontal rules...
+                            if (not line or line.startswith('#') or 
+                                line.startswith('---') or line.startswith('===')):
+                                continue
+                                
+                            description_lines.append(line)
+                            
+                            # Stop after collecting enough content...
+                            if len(' '.join(description_lines)) > 150:
+                                break
+                        
+                        if description_lines:
+                            description = ' '.join(description_lines)
+                            
+                            # Truncate to reasonable length...
+                            if len(description) > 200:
+                                description = description[:197] + '...'
+                            return description
+                    except Exception:
+                        pass  # Fall through to fallback
+        
+        # Fallback to generic description...
         return "GitHub repository analysis"
+
 
     def _detect_language_distribution(
         self, files: List[Dict[str, Any]], processing_metadata: Dict[str, Any]
