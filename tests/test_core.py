@@ -10,6 +10,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, Mock, AsyncMock, MagicMock
+from py_github_analyzer.exceptions import NetworkError
 
 # Add the parent directory to sys.path to import the module
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -297,3 +298,34 @@ class TestGitHubRepositoryAnalyzer:
             message = analyzer._create_comprehensive_error_message(original_error, fallback_error)
             assert isinstance(message, str)
             assert len(message) > 0
+
+    @pytest.mark.asyncio
+    async def test_analysis_fallback_on_zip_failure(self, mock_token_utils):
+        """ZIP 분석 실패 시 fallback 모드가 정상 동작하는지 테스트합니다."""
+        from py_github_analyzer.core import GitHubRepositoryAnalyzer
+        analyzer = GitHubRepositoryAnalyzer(token="test_token")
+
+        # 모든 분석 메서드가 실패하도록 mock 설정
+        with patch.object(analyzer, 'analyze_with_zip', side_effect=NetworkError("ZIP failed")), \
+            patch.object(analyzer, 'analyze_with_api', side_effect=NetworkError("API failed")), \
+            patch.object(analyzer, 'fallback_analysis', return_value={'success': True, 'fallback_mode': True}) as mock_fallback:
+
+            # fallback=True (기본값)
+            result = await analyzer.analyze_repository_async("https://github.com/test/repo")
+
+            assert result['success'] is True
+            assert result['fallback_mode'] is True
+            mock_fallback.assert_called_once() # fallback_analysis가 호출되었는지 확인
+
+    @pytest.mark.asyncio
+    async def test_analysis_no_fallback_on_failure(self, mock_token_utils):
+        """fallback=False일 때 분석 실패 시 예외가 발생하는지 테스트합니다."""
+        from py_github_analyzer.core import GitHubRepositoryAnalyzer
+        analyzer = GitHubRepositoryAnalyzer(token="test_token")
+
+        with patch.object(analyzer, 'analyze_with_zip', side_effect=NetworkError("ZIP failed")):
+            # fallback=False
+            result = await analyzer.analyze_repository_async("https://github.com/test/repo", fallback=False)
+
+            assert result['success'] is False
+            assert 'Analysis failed: NetworkError' in result['error_message']

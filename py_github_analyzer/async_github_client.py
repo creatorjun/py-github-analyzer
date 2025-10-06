@@ -247,18 +247,6 @@ class AsyncGitHubClient:
         if self.session:
             await self.session.close()
 
-    def __del__(self):
-        """Cleanup method when object is destroyed"""
-        if hasattr(self, 'session') and self.session:
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-            except:
-                # If we can't close gracefully, that's okay
-                pass
-
     async def get_repository_info(
         self, owner: str, repo: str, safe_mode: bool = False
     ) -> Dict[str, Any]:

@@ -68,6 +68,7 @@ dev = [
     # Development tools
     "pre-commit>=3.0.0",
     "tox>=4.0.0",                    # Multi-environment testing
+    "poethepoet>=0.24.0"
 ]
 
 test = [
@@ -485,3 +486,26 @@ include-package-data = true
 
 [tool.wheel]
 universal = false
+
+[tool.poe.tasks]
+test = "pytest tests -v"
+test-unit = "pytest tests -v -m 'unit'"
+test-integration = "pytest tests -v -m 'integration'"
+lint = "flake8 py_github_analyzer tests"
+format = [
+    "black py_github_analyzer tests",
+    "isort py_github_analyzer tests"
+]
+format-check = [
+    "black --check py_github_analyzer tests",
+    "isort --check-only py_github_analyzer tests"
+]
+build = "python -m build"
+clean = [
+    "rm -rf build/",
+    "rm -rf dist/",
+    "rm -rf *.egg-info/",
+    "rm -rf .pytest_cache/",
+    "rm -rf .mypy_cache/",
+    "find . -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true"
+]

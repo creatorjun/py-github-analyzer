@@ -535,14 +535,17 @@ class TestMainFunction:
             mock_run.assert_called_once()
             mock_exit.assert_called_once_with(0)
 
-    def test_main_keyboard_interrupt(self):
-        """Test main function with keyboard interrupt"""
-        with patch('py_github_analyzer.cli.asyncio.run', side_effect=KeyboardInterrupt), \
-             patch('sys.exit') as mock_exit:
+    @pytest.mark.asyncio
+    async def test_main_keyboard_interrupt_in_async_main(self):
+        """async_main이 KeyboardInterrupt를 처리하는지 테스트합니다."""
+        # 👇 new_callable=AsyncMock 추가
+        with patch('py_github_analyzer.cli.analyze_repository_async',
+                new_callable=AsyncMock, 
+                side_effect=KeyboardInterrupt), \
+            patch('sys.argv', ['py-github-analyzer', 'https://github.com/test/repo']):
             
-            main()
-            
-            mock_exit.assert_called_once_with(130)
+            result = await async_main()
+            assert result == 130
 
     def test_main_exception(self):
         """Test main function with general exception"""
@@ -615,46 +618,49 @@ class TestCLIIntegration:
             # 실제로는 토큰이 없어도 환경 체크는 성공하므로 True
             assert result is True
 
-    @pytest.mark.asyncio
-    async def test_full_cli_workflow_mock(self):
-        """Test complete CLI workflow with mocks"""
-        mock_result = {
-            'success': True,
-            'metadata': {
-                'repo': 'test/repo',
-                'lang': ['Python'],
-                'size': '1KB'
-            },
-            'files': [{'path': 'main.py', 'lines': 10}],
-            'output_paths': {'json': './output.json'}
-        }
-        
-        test_args = [
-            'py-github-analyzer',
-            'https://github.com/test/repo',
-            '--output', './test_output',
-            '--format', 'json',
-            '--verbose'
-        ]
-        
-        with patch('sys.argv', test_args), \
-             patch('py_github_analyzer.cli.analyze_repository_async', 
-                   return_value=mock_result) as mock_analyze, \
-             patch('py_github_analyzer.cli.print_banner') as mock_banner, \
-             patch('py_github_analyzer.cli.get_logger') as mock_logger:
+        @pytest.mark.asyncio
+        async def test_full_cli_workflow_mock(self):
+            """Test complete CLI workflow with mocks"""
+            mock_result = {
+                'success': True,
+                'metadata': {
+                    'repo': 'test/repo',
+                    'lang': ['Python'],
+                    'size': '1KB'
+                },
+                'files': [{'path': 'main.py', 'lines': 10}],
+                'output_paths': {'json': './output.json'}
+            }
             
-            mock_logger.return_value = MagicMock()
+            test_args = [
+                'py-github-analyzer',
+                'https://github.com/test/repo',
+                '--output', './test_output',
+                '--format', 'json',
+                '--verbose'
+            ]
             
-            result = await async_main()
-            
-            # Verify workflow
-            assert result == 0
-            mock_banner.assert_called_once()
-            mock_analyze.assert_called_once()
-            
-            # Verify analyze call arguments
-            call_kwargs = mock_analyze.call_args.kwargs
-            assert call_kwargs['repo_url'] == 'https://github.com/test/repo'
-            assert call_kwargs['output_dir'] == './test_output'
-            assert call_kwargs['output_format'] == 'json'
-            assert call_kwargs['verbose'] is True
+            # 👇 핵심 수정 사항: new_callable=AsyncMock 추가
+            with patch('sys.argv', test_args), \
+                patch('py_github_analyzer.cli.analyze_repository_async', 
+                    new_callable=AsyncMock, 
+                    return_value=mock_result) as mock_analyze, \
+                patch('py_github_analyzer.cli.print_banner') as mock_banner, \
+                patch('py_github_analyzer.cli.get_logger') as mock_get_logger:
+                
+                mock_get_logger .return_value = MagicMock()
+                
+                # async_main()을 직접 await로 호출
+                result = await async_main()
+                
+                # Verify workflow
+                assert result == 0
+                mock_banner.assert_called_once()
+                mock_analyze.assert_called_once()
+                
+                # Verify analyze call arguments
+                call_kwargs = mock_analyze.call_args.kwargs
+                assert call_kwargs['repo_url'] == 'https://github.com/test/repo'
+                assert call_kwargs['output_dir'] == './test_output'
+                assert call_kwargs['output_format'] == 'json'
+                assert call_kwargs['verbose'] is True
